@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS sold_listings (
 	price      INTEGER NOT NULL,             -- SEK
 	title      TEXT    NOT NULL,             -- raw title, for auditing classification
 	sold_at    TEXT    NOT NULL,             -- RFC3339
+	listed_at  TEXT,                         -- RFC3339; NULL on rows scraped before the column existed
 	url        TEXT    NOT NULL,
 	scraped_at TEXT    NOT NULL
 );
@@ -59,12 +60,18 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	// Migration for databases created before the broken flag existed.
-	var hasBroken int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('active_listings') WHERE name='broken'`).Scan(&hasBroken); err == nil && hasBroken == 0 {
-		if _, err := db.Exec(`ALTER TABLE active_listings ADD COLUMN broken INTEGER NOT NULL DEFAULT 0`); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("migrate broken column: %w", err)
+	// Migrations for databases created before a column existed.
+	addedColumns := []struct{ table, col, def string }{
+		{"active_listings", "broken", "INTEGER NOT NULL DEFAULT 0"},
+		{"sold_listings", "listed_at", "TEXT"},
+	}
+	for _, m := range addedColumns {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, m.table, m.col).Scan(&n); err == nil && n == 0 {
+			if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, m.table, m.col, m.def)); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("migrate %s.%s: %w", m.table, m.col, err)
+			}
 		}
 	}
 	return &Store{db: db}, nil
@@ -79,21 +86,55 @@ type SoldListing struct {
 	Price     int
 	Title     string
 	SoldAt    time.Time
+	ListedAt  time.Time // zero when unknown (rows from before the column existed)
 	URL       string
 }
 
 // InsertSold appends a sold record; returns false if the id already existed.
+// Re-scraping a known id fills in listed_at if an older run left it NULL.
 func (s *Store) InsertSold(l SoldListing) (bool, error) {
-	res, err := s.db.Exec(`INSERT OR IGNORE INTO sold_listings
-		(id, model, storage_gb, price, title, sold_at, url, scraped_at)
-		VALUES (?,?,?,?,?,?,?,?)`,
+	var listedAt any
+	if !l.ListedAt.IsZero() {
+		listedAt = l.ListedAt.UTC().Format(time.RFC3339)
+	}
+	res, err := s.db.Exec(`INSERT INTO sold_listings
+		(id, model, storage_gb, price, title, sold_at, listed_at, url, scraped_at)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET listed_at = excluded.listed_at
+			WHERE sold_listings.listed_at IS NULL AND excluded.listed_at IS NOT NULL`,
 		l.ID, l.Model, l.StorageGB, l.Price, l.Title,
-		l.SoldAt.UTC().Format(time.RFC3339), l.URL, time.Now().UTC().Format(time.RFC3339))
+		l.SoldAt.UTC().Format(time.RFC3339), listedAt, l.URL, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// ListSold returns sold listings since the cutoff, newest sale first.
+func (s *Store) ListSold(since time.Time) ([]SoldListing, error) {
+	rows, err := s.db.Query(`SELECT id, model, storage_gb, price, title, sold_at, listed_at, url
+		FROM sold_listings WHERE sold_at >= ? ORDER BY sold_at DESC`,
+		since.UTC().Format(time.RFC3339))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SoldListing
+	for rows.Next() {
+		var l SoldListing
+		var soldAt string
+		var listedAt sql.NullString
+		if err := rows.Scan(&l.ID, &l.Model, &l.StorageGB, &l.Price, &l.Title, &soldAt, &listedAt, &l.URL); err != nil {
+			return nil, err
+		}
+		l.SoldAt, _ = time.Parse(time.RFC3339, soldAt)
+		if listedAt.Valid {
+			l.ListedAt, _ = time.Parse(time.RFC3339, listedAt.String)
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) SoldCount() (int, error) {

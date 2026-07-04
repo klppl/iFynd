@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -93,6 +94,17 @@ func (a *App) Router() http.Handler {
 		writeJSON(w, map[string]any{"id": id, "broken": body.Broken})
 	})
 
+	// Historical sales that were bargains: sold below the bucket reference
+	// by at least the hit threshold.
+	r.Get("/api/bargains", func(w http.ResponseWriter, _ *http.Request) {
+		views, err := a.bargainViews()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, views)
+	})
+
 	// Hits found on the most recent run (including previously notified ones).
 	r.Get("/api/hits", func(w http.ResponseWriter, _ *http.Request) {
 		a.mu.Lock()
@@ -117,50 +129,123 @@ func (a *App) Router() http.Handler {
 	return r
 }
 
+// refCache lazily computes the reference price per (model, storage) bucket
+// over the configured lookback window.
+type bucketKey struct {
+	model string
+	gb    int
+}
+
+type bucketRef struct {
+	ref     float64
+	samples int
+}
+
+type refCache struct {
+	a     *App
+	since time.Time
+	refs  map[bucketKey]bucketRef
+}
+
+func (a *App) newRefCache() *refCache {
+	return &refCache{
+		a:     a,
+		since: time.Now().AddDate(0, 0, -a.cfg.LookbackDays),
+		refs:  map[bucketKey]bucketRef{},
+	}
+}
+
+func (c *refCache) get(model string, gb int) (ref float64, samples int, err error) {
+	key := bucketKey{model, gb}
+	r, ok := c.refs[key]
+	if !ok {
+		prices, err := c.a.store.SoldPrices(model, gb, c.since)
+		if err != nil {
+			return 0, 0, err
+		}
+		r.samples = len(prices)
+		if r.samples >= c.a.cfg.MinSamples {
+			r.ref = analyze.Reference(prices, c.a.cfg.Metric, c.a.cfg.TrimPct)
+		}
+		c.refs[key] = r
+	}
+	return r.ref, r.samples, nil
+}
+
 // listingViews joins active listings with their bucket reference prices.
 func (a *App) listingViews() ([]ListingView, error) {
 	actives, err := a.store.ListActive()
 	if err != nil {
 		return nil, err
 	}
-	since := time.Now().AddDate(0, 0, -a.cfg.LookbackDays)
-
-	type bucketKey struct {
-		model string
-		gb    int
-	}
-	type bucketRef struct {
-		ref     float64
-		samples int
-	}
-	refs := map[bucketKey]bucketRef{}
-
+	cache := a.newRefCache()
 	views := make([]ListingView, 0, len(actives))
 	for _, l := range actives {
-		key := bucketKey{l.Model, l.StorageGB}
-		r, cached := refs[key]
-		if !cached {
-			prices, err := a.store.SoldPrices(key.model, key.gb, since)
-			if err != nil {
-				return nil, err
-			}
-			r.samples = len(prices)
-			if r.samples >= a.cfg.MinSamples {
-				r.ref = analyze.Reference(prices, a.cfg.Metric, a.cfg.TrimPct)
-			}
-			refs[key] = r
+		ref, samples, err := cache.get(l.Model, l.StorageGB)
+		if err != nil {
+			return nil, err
 		}
 		v := ListingView{
 			ID: l.ID, Model: l.Model, StorageGB: l.StorageGB,
 			Price: l.Price, Title: l.Title, URL: l.URL,
 			FirstSeen: l.FirstSeen, Notified: l.Notified, Broken: l.Broken,
-			Samples: r.samples,
+			Samples: samples,
 		}
-		if r.ref > 0 {
-			v.RefPrice = r.ref
-			v.PctBelow = analyze.PctBelow(l.Price, r.ref)
+		if ref > 0 {
+			v.RefPrice = ref
+			v.PctBelow = analyze.PctBelow(l.Price, ref)
 			// Purely price-based; the broken flag is the user's veto on top.
-			v.IsHit = analyze.IsHit(l.Price, r.ref, a.cfg.ThresholdPct)
+			v.IsHit = analyze.IsHit(l.Price, ref, a.cfg.ThresholdPct)
+		}
+		views = append(views, v)
+	}
+	return views, nil
+}
+
+// BargainView is one historical sale that went for a good price.
+type BargainView struct {
+	ID         int64      `json:"id"`
+	Model      string     `json:"model"`
+	StorageGB  int        `json:"storage_gb"`
+	Price      int        `json:"price"`
+	Title      string     `json:"title"`
+	URL        string     `json:"url"`
+	SoldAt     time.Time  `json:"sold_at"`
+	ListedAt   *time.Time `json:"listed_at,omitempty"`
+	DaysListed *int       `json:"days_listed,omitempty"` // nil when listed_at is unknown
+	RefPrice   float64    `json:"ref_price"`
+	Samples    int        `json:"samples"`
+	PctBelow   float64    `json:"pct_below"`
+}
+
+// bargainViews returns sold listings within the lookback window whose final
+// price undercut their bucket reference by at least the hit threshold.
+func (a *App) bargainViews() ([]BargainView, error) {
+	cache := a.newRefCache()
+	sold, err := a.store.ListSold(cache.since)
+	if err != nil {
+		return nil, err
+	}
+	views := []BargainView{}
+	for _, l := range sold {
+		ref, samples, err := cache.get(l.Model, l.StorageGB)
+		if err != nil {
+			return nil, err
+		}
+		if !analyze.IsHit(l.Price, ref, a.cfg.ThresholdPct) {
+			continue
+		}
+		v := BargainView{
+			ID: l.ID, Model: l.Model, StorageGB: l.StorageGB,
+			Price: l.Price, Title: l.Title, URL: l.URL,
+			SoldAt: l.SoldAt, RefPrice: ref, Samples: samples,
+			PctBelow: analyze.PctBelow(l.Price, ref),
+		}
+		if !l.ListedAt.IsZero() {
+			t := l.ListedAt
+			v.ListedAt = &t
+			days := int(math.Round(l.SoldAt.Sub(l.ListedAt).Hours() / 24))
+			v.DaysListed = &days
 		}
 		views = append(views, v)
 	}

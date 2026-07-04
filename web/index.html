@@ -61,9 +61,20 @@ header {
   text-align: right;
 }
 
+.tabs { display: flex; gap: 22px; padding-top: 14px; }
+.tabs button {
+  font: 600 14px var(--sans);
+  color: var(--muted);
+  background: none; border: none; padding: 0 0 6px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button.active { color: var(--ink); border-bottom-color: var(--deal); }
+.tabs .count { font: 12px var(--mono); color: var(--muted); }
+
 .toolbar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
-  padding: 14px 0 10px;
+  padding: 12px 0 10px;
 }
 .toolbar input[type=search], .toolbar select {
   font: 13px var(--sans);
@@ -180,26 +191,21 @@ tr.broken button.flag { border-style: dashed; }
   <div id="status">laddar status …</div>
 </header>
 
+<nav class="tabs">
+  <button class="active" data-view="active">Aktiva annonser</button>
+  <button data-view="bargains">Sålda fynd <span class="count" id="bargainCount"></span></button>
+</nav>
+
 <div class="toolbar">
   <input type="search" id="q" placeholder="Sök titel eller modell …" autocomplete="off">
   <select id="model"><option value="">Alla modeller</option></select>
-  <label class="check"><input type="checkbox" id="onlyHits"> Endast fynd</label>
-  <label class="check"><input type="checkbox" id="showBroken" checked> Visa trasiga</label>
+  <label class="check" id="onlyHitsWrap"><input type="checkbox" id="onlyHits"> Endast fynd</label>
+  <label class="check" id="showBrokenWrap"><input type="checkbox" id="showBroken" checked> Visa trasiga</label>
   <span id="summary"></span>
 </div>
 
 <table>
-  <thead>
-    <tr>
-      <th>Annons</th>
-      <th class="num" data-sort="price">Pris kr <span class="arrow"></span></th>
-      <th class="num" data-sort="ref">Median kr <span class="arrow"></span></th>
-      <th data-sort="gap">Prisgap <span class="arrow"></span></th>
-      <th class="num col-samples" data-sort="samples">Sålda <span class="arrow"></span></th>
-      <th class="col-seen" data-sort="seen">Sedd <span class="arrow"></span></th>
-      <th></th>
-    </tr>
-  </thead>
+  <thead id="thead"></thead>
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" hidden></div>
@@ -207,12 +213,37 @@ tr.broken button.flag { border-style: dashed; }
 <script>
 "use strict";
 let listings = [];
-let sortKey = "gap", sortDir = -1;
+let bargains = [];
+let view = "active";
+const sortState = {
+  active: { key: "gap", dir: -1 },
+  bargains: { key: "sold", dir: -1 },
+};
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => s.replace(/[&<>"']/g, (c) =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const kr = (n) => Math.round(n).toLocaleString("sv-SE");
+const gbText = (gb) => gb >= 1024 ? "1 TB" : gb + " GB";
+
+const HEADS = {
+  active: `<tr>
+    <th>Annons</th>
+    <th class="num" data-sort="price">Pris kr <span class="arrow"></span></th>
+    <th class="num" data-sort="ref">Median kr <span class="arrow"></span></th>
+    <th data-sort="gap">Prisgap <span class="arrow"></span></th>
+    <th class="num col-samples" data-sort="samples">Sålda <span class="arrow"></span></th>
+    <th class="col-seen" data-sort="seen">Sedd <span class="arrow"></span></th>
+    <th></th></tr>`,
+  bargains: `<tr>
+    <th>Annons</th>
+    <th class="num" data-sort="price">Såld för kr <span class="arrow"></span></th>
+    <th class="num" data-sort="ref">Median kr <span class="arrow"></span></th>
+    <th data-sort="gap">Prisgap <span class="arrow"></span></th>
+    <th class="num col-samples" data-sort="samples">Sålda <span class="arrow"></span></th>
+    <th class="num" data-sort="days">Liggetid <span class="arrow"></span></th>
+    <th class="col-seen" data-sort="sold">Såld <span class="arrow"></span></th></tr>`,
+};
 
 function seenText(iso) {
   const days = Math.floor((Date.now() - new Date(iso)) / 864e5);
@@ -220,6 +251,11 @@ function seenText(iso) {
   if (days === 1) return "igår";
   if (days < 7) return days + " d";
   return new Date(iso).toLocaleDateString("sv-SE", { day: "numeric", month: "short" });
+}
+
+function daysText(d) {
+  if (d == null) return "—";
+  return d < 1 ? "&lt;1 d" : d + " d";
 }
 
 function gapCell(l) {
@@ -233,57 +269,95 @@ function gapCell(l) {
   </div>`;
 }
 
+function titleCell(l, extra) {
+  return `<td class="title">
+    <a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title)}</a>
+    <div class="model-sub">${esc(l.model)} · ${gbText(l.storage_gb)}${extra || ""}</div>
+  </td>`;
+}
+
+function activeRow(l) {
+  const sub =
+    (l.is_hit && !l.broken ? ' <span class="badge">fynd</span>' : "") +
+    (l.broken ? " · markerad trasig" : "");
+  return `<tr class="${l.broken ? "broken" : l.is_hit ? "hit" : ""}">
+    ${titleCell(l, sub)}
+    <td class="num price">${kr(l.price)}</td>
+    <td class="num">${l.ref_price ? kr(l.ref_price) : "—"}</td>
+    <td>${gapCell(l)}</td>
+    <td class="num col-samples">${l.samples}</td>
+    <td class="col-seen mono">${seenText(l.first_seen)}</td>
+    <td><button class="flag" data-id="${l.id}" data-broken="${l.broken}">
+      ${l.broken ? "Ångra" : "Trasig"}</button></td>
+  </tr>`;
+}
+
+function bargainRow(l) {
+  return `<tr>
+    ${titleCell(l)}
+    <td class="num price">${kr(l.price)}</td>
+    <td class="num">${kr(l.ref_price)}</td>
+    <td>${gapCell(l)}</td>
+    <td class="num col-samples">${l.samples}</td>
+    <td class="num">${daysText(l.days_listed)}</td>
+    <td class="col-seen mono">${new Date(l.sold_at)
+      .toLocaleDateString("sv-SE", { day: "numeric", month: "short" })}</td>
+  </tr>`;
+}
+
+const SORTVALS = {
+  price: (l) => l.price,
+  ref: (l) => l.ref_price || -1,
+  gap: (l) => (l.ref_price ? l.pct_below : -Infinity),
+  samples: (l) => l.samples,
+  seen: (l) => new Date(l.first_seen).getTime(),
+  sold: (l) => new Date(l.sold_at).getTime(),
+  days: (l) => l.days_listed ?? -1,
+};
+
 function render() {
   const q = $("q").value.trim().toLowerCase();
   const model = $("model").value;
-  const onlyHits = $("onlyHits").checked;
-  const showBroken = $("showBroken").checked;
+  const isActive = view === "active";
+  $("onlyHitsWrap").style.display = isActive ? "" : "none";
+  $("showBrokenWrap").style.display = isActive ? "" : "none";
+  $("thead").innerHTML = HEADS[view];
 
-  // is_hit is purely price-based; a broken flag vetoes it visually, but the
-  // row stays (greyed) in the fynd view so an accidental flag can be undone.
-  let rows = listings.filter((l) =>
+  const source = isActive ? listings : bargains;
+  let rows = source.filter((l) =>
     (!q || (l.title + " " + l.model).toLowerCase().includes(q)) &&
-    (!model || l.model === model) &&
-    (!onlyHits || l.is_hit) &&
-    (showBroken || !l.broken));
+    (!model || l.model === model));
+  if (isActive) {
+    // is_hit is purely price-based; a broken flag vetoes it visually, but the
+    // row stays (greyed) in the fynd view so an accidental flag can be undone.
+    const onlyHits = $("onlyHits").checked;
+    const showBroken = $("showBroken").checked;
+    rows = rows.filter((l) =>
+      (!onlyHits || l.is_hit) && (showBroken || !l.broken));
+  }
 
-  const val = {
-    price: (l) => l.price,
-    ref: (l) => l.ref_price || -1,
-    gap: (l) => (l.ref_price ? l.pct_below : -Infinity),
-    samples: (l) => l.samples,
-    seen: (l) => new Date(l.first_seen).getTime(),
-  }[sortKey];
-  rows.sort((a, b) => (a.broken - b.broken) || sortDir * (val(a) - val(b)));
+  const { key, dir } = sortState[view];
+  const val = SORTVALS[key];
+  rows.sort((a, b) =>
+    ((a.broken ?? 0) - (b.broken ?? 0)) || dir * (val(a) - val(b)));
 
-  $("rows").innerHTML = rows.map((l) => `
-    <tr class="${l.broken ? "broken" : l.is_hit ? "hit" : ""}">
-      <td class="title">
-        <a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title)}</a>
-        <div class="model-sub">${esc(l.model)} · ${l.storage_gb >= 1024 ? "1 TB" : l.storage_gb + " GB"}
-          ${l.is_hit && !l.broken ? '<span class="badge">fynd</span>' : ""}
-          ${l.broken ? "· markerad trasig" : ""}</div>
-      </td>
-      <td class="num price">${kr(l.price)}</td>
-      <td class="num">${l.ref_price ? kr(l.ref_price) : "—"}</td>
-      <td>${gapCell(l)}</td>
-      <td class="num col-samples">${l.samples}</td>
-      <td class="col-seen mono">${seenText(l.first_seen)}</td>
-      <td><button class="flag" data-id="${l.id}" data-broken="${l.broken}">
-        ${l.broken ? "Ångra" : "Trasig"}</button></td>
-    </tr>`).join("");
+  $("rows").innerHTML = rows.map(isActive ? activeRow : bargainRow).join("");
 
   const hits = listings.filter((l) => l.is_hit && !l.broken).length;
-  $("summary").textContent =
-    `${hits} fynd · ${rows.length}/${listings.length} annonser`;
+  $("summary").textContent = isActive
+    ? `${hits} fynd · ${rows.length}/${listings.length} annonser`
+    : `${rows.length}/${bargains.length} sålda fynd`;
+  $("bargainCount").textContent = bargains.length ? `(${bargains.length})` : "";
   $("empty").hidden = rows.length > 0;
-  $("empty").textContent = listings.length === 0
-    ? "Inga annonser ännu — första skrapningen pågår."
+  $("empty").textContent = source.length === 0
+    ? (isActive
+        ? "Inga annonser ännu — första skrapningen pågår."
+        : "Inga sålda fynd i historiken ännu.")
     : "Inget matchar filtren.";
 
   document.querySelectorAll("thead th[data-sort]").forEach((th) => {
     th.querySelector(".arrow").textContent =
-      th.dataset.sort === sortKey ? (sortDir < 0 ? "▼" : "▲") : "";
+      th.dataset.sort === key ? (dir < 0 ? "▼" : "▲") : "";
   });
 }
 
@@ -300,13 +374,15 @@ async function toggleBroken(id, broken) {
 }
 
 async function load() {
-  const [st, ls] = await Promise.all([
+  const [st, ls, bg] = await Promise.all([
     fetch("/api/status").then((r) => r.json()),
     fetch("/api/listings").then((r) => r.json()),
+    fetch("/api/bargains").then((r) => r.json()),
   ]);
   listings = ls || [];
+  bargains = bg || [];
 
-  const models = [...new Set(listings.map((l) => l.model))].sort();
+  const models = [...new Set([...listings, ...bargains].map((l) => l.model))].sort();
   const sel = $("model"), cur = sel.value;
   sel.length = 1;
   for (const m of models) sel.add(new Option(m, m));
@@ -324,11 +400,19 @@ document.querySelector("tbody").addEventListener("click", (e) => {
   const btn = e.target.closest("button.flag");
   if (btn) toggleBroken(Number(btn.dataset.id), btn.dataset.broken !== "true");
 });
-document.querySelectorAll("thead th[data-sort]").forEach((th) =>
-  th.addEventListener("click", () => {
-    const k = th.dataset.sort;
-    sortDir = k === sortKey ? -sortDir : -1;
-    sortKey = k;
+$("thead").addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-sort]");
+  if (!th) return;
+  const s = sortState[view];
+  s.dir = th.dataset.sort === s.key ? -s.dir : -1;
+  s.key = th.dataset.sort;
+  render();
+});
+document.querySelectorAll(".tabs button").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    view = btn.dataset.view;
+    document.querySelectorAll(".tabs button").forEach((b) =>
+      b.classList.toggle("active", b === btn));
     render();
   }));
 for (const id of ["q", "model", "onlyHits", "showBroken"])

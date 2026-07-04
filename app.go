@@ -138,7 +138,7 @@ func (a *App) scrapeSold(ctx context.Context, st *Status) error {
 			inserted, err := a.store.InsertSold(store.SoldListing{
 				ID: it.ItemID, Model: c.Model, StorageGB: c.StorageGB,
 				Price: it.Price, Title: it.ShortDescription,
-				SoldAt: it.EndDate, URL: it.ItemURL,
+				SoldAt: it.EndDate, ListedAt: it.StartDate, URL: it.ItemURL,
 			})
 			if err != nil {
 				return err

@@ -59,6 +59,7 @@ func TestClassifyRejects(t *testing.T) {
 		"Säljer iPhone 13 128GB och iPhone 12 64GB",             // two storages
 		"Tom kartong till iPhone 15 Pro 256GB",                  // empty box
 		"iPhone 14 Pro Max cracked back working 128gb",          // damaged, English
+		"iPhone Xs Max 256 GB ser ut som iPhone 17 PRO Max",     // lookalike
 		"iPhone 13 Pro Max 128gb defekt",                        // damaged, Swedish
 	}
 	for _, title := range tests {

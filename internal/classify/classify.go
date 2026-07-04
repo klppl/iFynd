@@ -39,6 +39,8 @@ var junkWords = []string{
 	"bara kartong", "kartong till", "box only", "empty box", "skärm till",
 	"display till", "batteri till", "moderkort", "attrapp", "dummy",
 	"kopia", "replika", "watch", "paket", "ipad",
+	// lookalikes ("ser ut som en iPhone 17") sold under the pricier model
+	"ser ut som", "liknar", "ser ut att vara",
 }
 
 var badConditions = []string{"defekt", "reparation"}
