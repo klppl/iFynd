@@ -89,6 +89,26 @@ header {
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--muted); cursor: pointer; user-select: none;
 }
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.seg button {
+  font: 13px var(--sans);
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.active {
+  color: var(--surface);
+  background: var(--ink);
+}
 .toolbar label.check input { accent-color: var(--deal); }
 #summary { margin-left: auto; font: 12px var(--mono); color: var(--muted); }
 
@@ -189,7 +209,7 @@ tr.broken button.flag { border-style: dashed; }
 
 <header>
   <span class="wordmark">iFynd</span>
-  <span class="tagline">prisradar · iPhone på Tradera</span>
+  <span class="tagline">prisradar · iPhone & iPad på Tradera</span>
   <div id="status">laddar status …</div>
 </header>
 
@@ -200,6 +220,11 @@ tr.broken button.flag { border-style: dashed; }
 
 <div class="toolbar">
   <input type="search" id="q" placeholder="Sök titel eller modell …" autocomplete="off">
+  <div class="seg" id="family" role="group" aria-label="Enhetstyp">
+    <button data-fam="" class="active">Alla</button>
+    <button data-fam="iphone">iPhone</button>
+    <button data-fam="ipad">iPad</button>
+  </div>
   <select id="model"><option value="">Alla modeller</option></select>
   <label class="check" id="onlyHitsWrap"><input type="checkbox" id="onlyHits"> Endast fynd</label>
   <span id="summary"></span>
@@ -216,6 +241,8 @@ tr.broken button.flag { border-style: dashed; }
 let listings = [];
 let bargains = [];
 let view = "active";
+let famFilter = "";
+const famOf = (l) => l.model.toLowerCase().startsWith("ipad") ? "ipad" : "iphone";
 const sortState = {
   active: { key: "gap", dir: -1 },
   bargains: { key: "sold", dir: -1 },
@@ -329,6 +356,7 @@ function render() {
   const source = isActive ? listings : bargains;
   let rows = source.filter((l) =>
     (!q || (l.title + " " + l.model).toLowerCase().includes(q)) &&
+    (!famFilter || famOf(l) === famFilter) &&
     (!model || l.model === model));
   if (isActive && $("onlyHits").checked) {
     // is_hit is purely price-based; a broken flag vetoes it visually, but the
@@ -369,6 +397,18 @@ async function exclude(id) {
   render();
 }
 
+// The model dropdown only offers models from the selected family.
+function refreshModelOptions() {
+  const models = [...new Set(
+    [...listings, ...bargains]
+      .filter((l) => !famFilter || famOf(l) === famFilter)
+      .map((l) => l.model))].sort();
+  const sel = $("model"), cur = sel.value;
+  sel.length = 1;
+  for (const m of models) sel.add(new Option(m, m));
+  sel.value = models.includes(cur) ? cur : "";
+}
+
 async function toggleBroken(id, broken) {
   const res = await fetch(`/api/listings/${id}/broken`, {
     method: "POST",
@@ -390,11 +430,7 @@ async function load() {
   listings = ls || [];
   bargains = bg || [];
 
-  const models = [...new Set([...listings, ...bargains].map((l) => l.model))].sort();
-  const sel = $("model"), cur = sel.value;
-  sel.length = 1;
-  for (const m of models) sel.add(new Option(m, m));
-  sel.value = models.includes(cur) ? cur : "";
+  refreshModelOptions();
 
   const t = st.last_run_start ? new Date(st.last_run_start) : null;
   $("status").innerHTML =
@@ -418,6 +454,14 @@ $("thead").addEventListener("click", (e) => {
   s.key = th.dataset.sort;
   render();
 });
+document.querySelectorAll("#family button").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    famFilter = btn.dataset.fam;
+    document.querySelectorAll("#family button").forEach((b) =>
+      b.classList.toggle("active", b === btn));
+    refreshModelOptions();
+    render();
+  }));
 document.querySelectorAll(".tabs button").forEach((btn) =>
   btn.addEventListener("click", () => {
     view = btn.dataset.view;
