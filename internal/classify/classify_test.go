@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/klppl/ifynd/internal/tradera"
@@ -60,6 +61,8 @@ func TestClassifyRejects(t *testing.T) {
 		"Tom kartong till iPhone 15 Pro 256GB",                  // empty box
 		"iPhone 14 Pro Max cracked back working 128gb",          // damaged, English
 		"iPhone Xs Max 256 GB ser ut som iPhone 17 PRO Max",     // lookalike
+		"Extra Frakt Ordernr. 147535957",                        // shipping surcharge
+		"KARTONG iPhone 14 Pro 128GB Space Black",               // empty box, prefix
 		"iPhone 13 Pro Max 128gb defekt",                        // damaged, Swedish
 	}
 	for _, title := range tests {
@@ -95,5 +98,41 @@ func TestClassifyPrefersAttributes(t *testing.T) {
 	res, ok, _ = Item(item("iPhone SE fint skick 64GB", map[string]string{"mobile_model": "iPhone SE (2020)"}))
 	if !ok || res.Model != "iPhone SE (2020)" {
 		t.Errorf("SE attr: got %+v ok=%v", res, ok)
+	}
+}
+
+// Real case: seller filed an "iPhone 16 Plus" title under the "iPhone 16"
+// model attribute. When both sources parse confidently but disagree, skip.
+func TestClassifyAttrTitleMismatch(t *testing.T) {
+	_, ok, reason := Item(item("iPhone 16 Plus 128 gb Rosa", map[string]string{"mobile_model": "iPhone 16"}))
+	if ok {
+		t.Error("model mismatch should reject")
+	} else if !strings.Contains(reason, "model mismatch") {
+		t.Errorf("reason = %q, want model mismatch", reason)
+	}
+
+	_, ok, reason = Item(item("iPhone 13 256GB", map[string]string{"mobile_disk_memory": "128 GB"}))
+	if ok {
+		t.Error("storage mismatch should reject")
+	} else if !strings.Contains(reason, "storage mismatch") {
+		t.Errorf("reason = %q, want storage mismatch", reason)
+	}
+
+	// Bare "iPhone" attribute carries no information — title wins, no mismatch.
+	res, ok, reason := Item(item("iPhone 16 PRO 128 gb", map[string]string{"mobile_model": "iPhone"}))
+	if !ok || res.Model != "iPhone 16 Pro" {
+		t.Errorf("bare iPhone attr: got %+v ok=%v (%s)", res, ok, reason)
+	}
+	// Bare "iPhone SE" attr + year from title = added specificity, not conflict.
+	res, ok, reason = Item(item("iPhone SE 2020 64GB", map[string]string{"mobile_model": "iPhone SE"}))
+	if !ok || res.Model != "iPhone SE (2020)" {
+		t.Errorf("SE year from title: got %+v ok=%v (%s)", res, ok, reason)
+	}
+
+	// Agreement (case-insensitive) still classifies.
+	res, ok, reason = Item(item("iphone 13 pro max 256gb", map[string]string{
+		"mobile_model": "iPhone 13 Pro Max", "mobile_disk_memory": "256 GB"}))
+	if !ok || res.Model != "iPhone 13 Pro Max" || res.StorageGB != 256 {
+		t.Errorf("agreeing sources: got %+v ok=%v (%s)", res, ok, reason)
 	}
 }

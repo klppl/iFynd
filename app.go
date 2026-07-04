@@ -130,6 +130,11 @@ func (a *App) scrapeSold(ctx context.Context, st *Status) error {
 				pageOldest = it.StartDate
 			}
 			c, ok, reason := classify.Item(it)
+			if ok && it.SoldPrice() < a.cfg.MinPrice {
+				// 1-3 kr "sales" are shipping surcharges, scams, or mistakes,
+				// never a working phone changing hands.
+				ok, reason = false, fmt.Sprintf("implausible price %d kr", it.SoldPrice())
+			}
 			if !ok {
 				st.SkippedLastRun++
 				a.store.RecordSkipped(it.ItemID, "sold", it.ShortDescription, it.ItemURL, reason)
@@ -137,7 +142,7 @@ func (a *App) scrapeSold(ctx context.Context, st *Status) error {
 			}
 			inserted, err := a.store.InsertSold(store.SoldListing{
 				ID: it.ItemID, Model: c.Model, StorageGB: c.StorageGB,
-				Price: it.Price, Title: it.ShortDescription,
+				Price: it.SoldPrice(), Title: it.ShortDescription,
 				SoldAt: it.EndDate, ListedAt: it.StartDate, URL: it.ItemURL,
 			})
 			if err != nil {
@@ -186,6 +191,9 @@ func (a *App) scrapeActive(ctx context.Context, st *Status) ([]activeItem, error
 			it := &res.Items[i]
 			st.ActiveScraped++
 			c, ok, reason := classify.Item(it)
+			if ok && it.FixedPrice() < a.cfg.MinPrice {
+				ok, reason = false, fmt.Sprintf("implausible price %d kr", it.FixedPrice())
+			}
 			if !ok {
 				st.SkippedLastRun++
 				a.store.RecordSkipped(it.ItemID, "active", it.ShortDescription, it.ItemURL, reason)

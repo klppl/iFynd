@@ -27,6 +27,7 @@ type Config struct {
 	CategoryID   int
 	ThresholdPct float64 // min % below reference to count as a hit
 	MinSamples   int     // min sold records before trusting a bucket
+	MinPrice     int     // SEK; listings below this are junk/scam, not phones
 	Metric       analyze.Metric
 	TrimPct      float64 // trimmed_mean only
 	LookbackDays int     // sold history window for averages
@@ -62,6 +63,9 @@ func loadConfig() (Config, error) {
 		return cfg, err
 	}
 	if cfg.MinSamples, err = envInt("IFYND_MIN_SAMPLES", 5); err != nil {
+		return cfg, err
+	}
+	if cfg.MinPrice, err = envInt("IFYND_MIN_PRICE", 100); err != nil {
 		return cfg, err
 	}
 	if cfg.TrimPct, err = envFloat("IFYND_TRIM_PCT", 10); err != nil {

@@ -58,6 +58,24 @@ func TestParseSearchPage(t *testing.T) {
 	}
 }
 
+// Real case (item 733922352): AuctionBin with a 1 kr opening bid that sold
+// via buy-now for 5500 kr with zero bids — the search payload's price field
+// keeps the opening bid.
+func TestSoldPrice(t *testing.T) {
+	binNoBids := Item{ItemType: "AuctionBin", Price: 1, BuyNowPrice: 5500, TotalBids: 0}
+	if got := binNoBids.SoldPrice(); got != 5500 {
+		t.Errorf("no-bid AuctionBin sold price = %d, want 5500 (buy-now)", got)
+	}
+	auctionWithBids := Item{ItemType: "Auction", Price: 11000, BuyNowPrice: 0, TotalBids: 75}
+	if got := auctionWithBids.SoldPrice(); got != 11000 {
+		t.Errorf("auction sold price = %d, want 11000 (winning bid)", got)
+	}
+	binWithBids := Item{ItemType: "AuctionBin", Price: 4200, BuyNowPrice: 5500, TotalBids: 3}
+	if got := binWithBids.SoldPrice(); got != 4200 {
+		t.Errorf("bid-on AuctionBin sold price = %d, want 4200 (winning bid)", got)
+	}
+}
+
 func TestPageURL(t *testing.T) {
 	q := SoldQuery(340186)
 	if got := q.pageURL(1, 0); got != "https://www.tradera.com/category/340186?itemStatus=Sold&sortBy=AddedOn" {

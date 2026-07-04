@@ -41,7 +41,14 @@ var junkWords = []string{
 	"kopia", "replika", "watch", "paket", "ipad",
 	// lookalikes ("ser ut som en iPhone 17") sold under the pricier model
 	"ser ut som", "liknar", "ser ut att vara",
+	// not a phone at all
+	"extra frakt", "fraktkostnad", "ordernr", "box till", "låda till",
 }
+
+// junkPrefixes catch titles that OPEN with a non-phone word where the word
+// alone would false-positive ("KARTONG iPhone 14 Pro" is an empty box, but
+// "iPhone 14 Pro med originalkartong" is a phone).
+var junkPrefixes = []string{"kartong", "box ", "tom "}
 
 var badConditions = []string{"defekt", "reparation"}
 
@@ -65,6 +72,11 @@ func Item(it *tradera.Item) (res Result, ok bool, reason string) {
 			return res, false, "junk word: " + w
 		}
 	}
+	for _, p := range junkPrefixes {
+		if strings.HasPrefix(title, p) {
+			return res, false, "junk prefix: " + p
+		}
+	}
 	if cond := strings.ToLower(it.Attr("condition")); cond != "" {
 		for _, bad := range badConditions {
 			if strings.Contains(cond, bad) {
@@ -76,21 +88,39 @@ func Item(it *tradera.Item) (res Result, ok bool, reason string) {
 		return res, false, "brand: " + brand
 	}
 
-	model := modelFromAttr(it)
+	// Sellers get the structured attributes wrong ("iPhone 16" attribute on
+	// an "iPhone 16 Plus" title). When attribute and title both parse
+	// confidently but disagree, trust neither.
+	attrModel := modelFromAttr(it)
+	titleModel := modelFromTitle(it.ShortDescription)
+	if attrModel != "" && titleModel != "" && !strings.EqualFold(attrModel, titleModel) {
+		// A bare "iPhone SE" attribute vs "iPhone SE (2020)" from the title
+		// is added specificity, not a contradiction.
+		if strings.EqualFold(attrModel, "iPhone SE") && strings.HasPrefix(strings.ToLower(titleModel), "iphone se (") {
+			attrModel = titleModel
+		} else {
+			return res, false, fmt.Sprintf("model mismatch: attr=%s title=%s", attrModel, titleModel)
+		}
+	}
+	model := attrModel
 	if model == "" {
-		model = modelFromTitle(it.ShortDescription)
+		model = titleModel
 	}
 	if model == "" {
 		return res, false, "no confident model"
 	}
 
-	gb := storageFromAttr(it)
+	attrGB := storageFromAttr(it)
+	titleGB, conflict := storageFromTitle(title)
+	if attrGB != 0 && titleGB != 0 && attrGB != titleGB {
+		return res, false, fmt.Sprintf("storage mismatch: attr=%d title=%d", attrGB, titleGB)
+	}
+	gb := attrGB
 	if gb == 0 {
-		var conflict bool
-		gb, conflict = storageFromTitle(title)
 		if conflict {
 			return res, false, "ambiguous storage in title"
 		}
+		gb = titleGB
 	}
 	if gb == 0 {
 		return res, false, "no storage size"
@@ -103,6 +133,9 @@ func modelFromAttr(it *tradera.Item) string {
 	m := strings.TrimSpace(it.Attr("mobile_model"))
 	if m == "" || !strings.HasPrefix(strings.ToLower(m), "iphone") {
 		return ""
+	}
+	if strings.EqualFold(m, "iphone") {
+		return "" // bare "iPhone" carries no model information
 	}
 	// Attribute values are already canonical ("iPhone 14 Pro Max",
 	// "iPhone SE (2022)"); just normalize the prefix casing.

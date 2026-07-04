@@ -67,6 +67,7 @@ with two tabs:
 | `IFYND_INTERVAL` | `30m` | Scrape interval |
 | `IFYND_THRESHOLD_PCT` | `15` | Min % below reference to count as a hit |
 | `IFYND_MIN_SAMPLES` | `5` | Min sold records before trusting a bucket |
+| `IFYND_MIN_PRICE` | `100` | Skip listings priced below this (junk/scams) |
 | `IFYND_METRIC` | `median` | `median` or `trimmed_mean` |
 | `IFYND_TRIM_PCT` | `10` | Trim per tail for `trimmed_mean` |
 | `IFYND_LOOKBACK_DAYS` | `90` | Sold-history window for references |

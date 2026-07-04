@@ -34,6 +34,7 @@ type Item struct {
 	ShortDescription string      `json:"shortDescription"`
 	ItemURL          string      `json:"itemUrl"`
 	ItemType         string      `json:"itemType"` // Auction | AuctionBin | PureBin
+	TotalBids        int         `json:"totalBids"`
 	StartDate        time.Time   `json:"startDate"`
 	EndDate          time.Time   `json:"endDate"`
 	IsActive         bool        `json:"isActive"`
@@ -62,6 +63,17 @@ func (it *Item) Attr(name string) string {
 // for AuctionBin (price would be the current bid), price for PureBin.
 func (it *Item) FixedPrice() int {
 	if it.BuyNowPrice > 0 {
+		return it.BuyNowPrice
+	}
+	return it.Price
+}
+
+// SoldPrice returns what a sold listing actually went for. When an
+// AuctionBin sells via buy-now before any bid lands, the search payload's
+// price field still holds the opening bid (often 1 kr) — the sale price is
+// buyNowPrice. With bids, price is the winning bid.
+func (it *Item) SoldPrice() int {
+	if it.TotalBids == 0 && it.BuyNowPrice > 0 {
 		return it.BuyNowPrice
 	}
 	return it.Price
