@@ -35,10 +35,20 @@ go run .               # loop every IFYND_INTERVAL (default 30m) + HTTP API
 docker compose up -d   # on the VPS; SQLite persisted in the ifynd-data volume
 ```
 
+## Web GUI
+
+`http://<host>:8080/` serves a single-page dashboard (embedded in the binary):
+all active listings with price, bucket median, a diverging price-gap bar, and
+sample count. Hits are highlighted; filters for search/model/only-hits. The
+**Trasig** button flags a listing as a broken device — it's greyed out, sorted
+last, and excluded from hits and notifications (undo with **Ångra**).
+
 ## HTTP API
 
 - `GET /healthz`
 - `GET /api/status` — last run stats
+- `GET /api/listings` — active listings with computed references and flags
+- `POST /api/listings/{id}/broken` — body `{"broken": true|false}`
 - `GET /api/hits` — hits from the most recent run
 - `GET /api/buckets` — sold-price buckets (count/min/max/mean)
 

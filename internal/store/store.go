@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS active_listings (
 	url        TEXT    NOT NULL,
 	first_seen TEXT    NOT NULL,
 	last_seen  TEXT    NOT NULL,
-	notified   INTEGER NOT NULL DEFAULT 0
+	notified   INTEGER NOT NULL DEFAULT 0,
+	broken     INTEGER NOT NULL DEFAULT 0    -- user-flagged in the GUI; excluded from hits
 );
 
 CREATE TABLE IF NOT EXISTS skipped_listings (
@@ -57,6 +58,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	// Migration for databases created before the broken flag existed.
+	var hasBroken int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('active_listings') WHERE name='broken'`).Scan(&hasBroken); err == nil && hasBroken == 0 {
+		if _, err := db.Exec(`ALTER TABLE active_listings ADD COLUMN broken INTEGER NOT NULL DEFAULT 0`); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("migrate broken column: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -100,7 +109,10 @@ type ActiveListing struct {
 	Price     int
 	Title     string
 	URL       string
+	FirstSeen time.Time
+	LastSeen  time.Time
 	Notified  bool
+	Broken    bool
 }
 
 // UpsertActive inserts or refreshes an active listing. Price updates on
@@ -118,13 +130,53 @@ func (s *Store) UpsertActive(l ActiveListing) error {
 	return err
 }
 
-func (s *Store) IsNotified(id int64) (bool, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT notified FROM active_listings WHERE id = ?`, id).Scan(&n)
+// Flags returns the notified and broken flags for a listing.
+func (s *Store) Flags(id int64) (notified, broken bool, err error) {
+	var n, b int
+	err = s.db.QueryRow(`SELECT notified, broken FROM active_listings WHERE id = ?`, id).Scan(&n, &b)
 	if err == sql.ErrNoRows {
-		return false, nil
+		return false, false, nil
 	}
-	return n != 0, err
+	return n != 0, b != 0, err
+}
+
+// SetBroken flags or unflags a listing as a broken device.
+func (s *Store) SetBroken(id int64, broken bool) error {
+	res, err := s.db.Exec(`UPDATE active_listings SET broken = ? WHERE id = ?`, broken, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ListActive returns all active listings, newest first.
+func (s *Store) ListActive() ([]ActiveListing, error) {
+	rows, err := s.db.Query(`SELECT id, model, storage_gb, price, title, url,
+		first_seen, last_seen, notified, broken
+		FROM active_listings ORDER BY first_seen DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ActiveListing
+	for rows.Next() {
+		var l ActiveListing
+		var first, last string
+		var notified, broken int
+		if err := rows.Scan(&l.ID, &l.Model, &l.StorageGB, &l.Price, &l.Title, &l.URL,
+			&first, &last, &notified, &broken); err != nil {
+			return nil, err
+		}
+		l.FirstSeen, _ = time.Parse(time.RFC3339, first)
+		l.LastSeen, _ = time.Parse(time.RFC3339, last)
+		l.Notified = notified != 0
+		l.Broken = broken != 0
+		out = append(out, l)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) MarkNotified(id int64) error {

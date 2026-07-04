@@ -242,6 +242,12 @@ func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) err
 		if !analyze.IsHit(ai.listing.Price, r.ref, a.cfg.ThresholdPct) {
 			continue
 		}
+		// User-flagged broken devices are false positives, not deals.
+		if _, broken, err := a.store.Flags(ai.listing.ID); err != nil {
+			return err
+		} else if broken {
+			continue
+		}
 		hits = append(hits, notify.Hit{
 			ListingID: ai.listing.ID,
 			Model:     ai.res.Model, StorageGB: ai.res.StorageGB,
@@ -256,7 +262,7 @@ func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) err
 
 	var errs []error
 	for _, h := range hits {
-		notified, err := a.store.IsNotified(h.ListingID)
+		notified, _, err := a.store.Flags(h.ListingID)
 		if err != nil {
 			return err
 		}

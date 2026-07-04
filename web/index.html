@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iFynd — prisradar</title>
+<style>
+:root {
+  --bg: #f1f3f0;
+  --surface: #ffffff;
+  --ink: #1b2228;
+  --muted: #61707a;
+  --line: #dde3e0;
+  --deal: #0e7a46;
+  --deal-wash: #e7f4eb;
+  --over: #b0b9b3;
+  --broken: #9aa4ab;
+  --focus: #1d5fbf;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --serif: Charter, "Iowan Old Style", Georgia, serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171b19;
+    --surface: #1f2523;
+    --ink: #e4e9e6;
+    --muted: #8d9a94;
+    --line: #313935;
+    --deal: #4cc98a;
+    --deal-wash: #223c2f;
+    --over: #55605a;
+    --broken: #6b7671;
+    --focus: #7aa7e8;
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); }
+body {
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 28px 20px 60px;
+  font: 14px/1.45 var(--sans);
+  color: var(--ink);
+}
+
+header {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px;
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 12px;
+}
+.wordmark {
+  font: italic 700 30px/1 var(--serif);
+  letter-spacing: -0.01em;
+}
+.tagline { color: var(--muted); font-size: 13px; }
+#status {
+  margin-left: auto;
+  font: 12px var(--mono);
+  color: var(--muted);
+  text-align: right;
+}
+
+.toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  padding: 14px 0 10px;
+}
+.toolbar input[type=search], .toolbar select {
+  font: 13px var(--sans);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.toolbar input[type=search] { width: 230px; }
+.toolbar label.check {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); cursor: pointer; user-select: none;
+}
+.toolbar label.check input { accent-color: var(--deal); }
+#summary { margin-left: auto; font: 12px var(--mono); color: var(--muted); }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+table { width: 100%; border-collapse: collapse; background: var(--surface); }
+thead th {
+  position: sticky; top: 0;
+  background: var(--surface);
+  text-align: left;
+  font: 600 11px var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--ink);
+  white-space: nowrap;
+}
+thead th.num, td.num { text-align: right; }
+thead th[data-sort] { cursor: pointer; }
+thead th[data-sort]:hover { color: var(--ink); }
+thead th .arrow { font-size: 9px; }
+tbody td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+tbody tr.hit { background: var(--deal-wash); box-shadow: inset 3px 0 0 var(--deal); }
+tbody tr.hit td.title a { font-weight: 600; }
+td.title { max-width: 340px; }
+td.title a {
+  color: inherit; text-decoration: none;
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+td.title a:hover { text-decoration: underline; }
+td .model-sub { font-size: 11.5px; color: var(--muted); }
+td.num, .mono { font: 13px var(--mono); font-variant-numeric: tabular-nums; }
+td.num.price { font-weight: 700; }
+
+/* Gap bar: diverging from the bucket median. Cheaper grows left in green. */
+.gap { display: flex; align-items: center; gap: 8px; }
+.gap .track {
+  position: relative; width: 92px; height: 8px;
+  background: color-mix(in srgb, var(--line) 55%, transparent);
+  border-radius: 4px; overflow: hidden; flex: none;
+}
+.gap .track::after {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+  width: 1.5px; background: var(--muted); opacity: .8;
+}
+.gap .fill { position: absolute; top: 0; bottom: 0; }
+.gap .fill.below { right: 50%; background: var(--deal); border-radius: 4px 0 0 4px; }
+.gap .fill.above { left: 50%; background: var(--over); border-radius: 0 4px 4px 0; }
+.gap b { font: 700 12px var(--mono); min-width: 44px; }
+.gap b.below { color: var(--deal); }
+.gap b.above { color: var(--muted); font-weight: 400; }
+.gap .na { color: var(--muted); font: 12px var(--mono); }
+
+tr.broken td { color: var(--broken); }
+tr.broken td.title a, tr.broken td.num { text-decoration: line-through; color: var(--broken); }
+tr.broken { background: transparent !important; box-shadow: none !important; }
+tr.broken .gap .fill { background: var(--broken); }
+tr.broken .gap b { color: var(--broken); }
+
+button.flag {
+  font: 12px var(--sans);
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button.flag:hover { color: var(--ink); border-color: var(--muted); }
+tr.broken button.flag { border-style: dashed; }
+
+.badge {
+  display: inline-block; font: 600 10px var(--sans);
+  text-transform: uppercase; letter-spacing: .05em;
+  color: var(--deal); border: 1px solid var(--deal);
+  border-radius: 4px; padding: 1px 5px; margin-left: 6px;
+  vertical-align: 1px;
+}
+#empty {
+  padding: 48px 10px; text-align: center; color: var(--muted);
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+@media (max-width: 720px) {
+  .col-seen, .col-samples { display: none; }
+  td.title { max-width: 160px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="wordmark">iFynd</span>
+  <span class="tagline">prisradar · iPhone på Tradera</span>
+  <div id="status">laddar status …</div>
+</header>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="Sök titel eller modell …" autocomplete="off">
+  <select id="model"><option value="">Alla modeller</option></select>
+  <label class="check"><input type="checkbox" id="onlyHits"> Endast fynd</label>
+  <label class="check"><input type="checkbox" id="showBroken" checked> Visa trasiga</label>
+  <span id="summary"></span>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Annons</th>
+      <th class="num" data-sort="price">Pris kr <span class="arrow"></span></th>
+      <th class="num" data-sort="ref">Median kr <span class="arrow"></span></th>
+      <th data-sort="gap">Prisgap <span class="arrow"></span></th>
+      <th class="num col-samples" data-sort="samples">Sålda <span class="arrow"></span></th>
+      <th class="col-seen" data-sort="seen">Sedd <span class="arrow"></span></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" hidden></div>
+
+<script>
+"use strict";
+let listings = [];
+let sortKey = "gap", sortDir = -1;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s.replace(/[&<>"']/g, (c) =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const kr = (n) => Math.round(n).toLocaleString("sv-SE");
+
+function seenText(iso) {
+  const days = Math.floor((Date.now() - new Date(iso)) / 864e5);
+  if (days <= 0) return "idag";
+  if (days === 1) return "igår";
+  if (days < 7) return days + " d";
+  return new Date(iso).toLocaleDateString("sv-SE", { day: "numeric", month: "short" });
+}
+
+function gapCell(l) {
+  if (!l.ref_price) return '<span class="na">för få sålda</span>';
+  const pct = l.pct_below;
+  const side = pct >= 0 ? "below" : "above";
+  const width = Math.min(Math.abs(pct), 50); // half-track = 50 % gap
+  return `<div class="gap">
+    <div class="track"><i class="fill ${side}" style="width:${width}%"></i></div>
+    <b class="${side}">${pct >= 0 ? "−" : "+"}${Math.abs(pct).toFixed(0)}%</b>
+  </div>`;
+}
+
+function render() {
+  const q = $("q").value.trim().toLowerCase();
+  const model = $("model").value;
+  const onlyHits = $("onlyHits").checked;
+  const showBroken = $("showBroken").checked;
+
+  // is_hit is purely price-based; a broken flag vetoes it visually, but the
+  // row stays (greyed) in the fynd view so an accidental flag can be undone.
+  let rows = listings.filter((l) =>
+    (!q || (l.title + " " + l.model).toLowerCase().includes(q)) &&
+    (!model || l.model === model) &&
+    (!onlyHits || l.is_hit) &&
+    (showBroken || !l.broken));
+
+  const val = {
+    price: (l) => l.price,
+    ref: (l) => l.ref_price || -1,
+    gap: (l) => (l.ref_price ? l.pct_below : -Infinity),
+    samples: (l) => l.samples,
+    seen: (l) => new Date(l.first_seen).getTime(),
+  }[sortKey];
+  rows.sort((a, b) => (a.broken - b.broken) || sortDir * (val(a) - val(b)));
+
+  $("rows").innerHTML = rows.map((l) => `
+    <tr class="${l.broken ? "broken" : l.is_hit ? "hit" : ""}">
+      <td class="title">
+        <a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title)}</a>
+        <div class="model-sub">${esc(l.model)} · ${l.storage_gb >= 1024 ? "1 TB" : l.storage_gb + " GB"}
+          ${l.is_hit && !l.broken ? '<span class="badge">fynd</span>' : ""}
+          ${l.broken ? "· markerad trasig" : ""}</div>
+      </td>
+      <td class="num price">${kr(l.price)}</td>
+      <td class="num">${l.ref_price ? kr(l.ref_price) : "—"}</td>
+      <td>${gapCell(l)}</td>
+      <td class="num col-samples">${l.samples}</td>
+      <td class="col-seen mono">${seenText(l.first_seen)}</td>
+      <td><button class="flag" data-id="${l.id}" data-broken="${l.broken}">
+        ${l.broken ? "Ångra" : "Trasig"}</button></td>
+    </tr>`).join("");
+
+  const hits = listings.filter((l) => l.is_hit && !l.broken).length;
+  $("summary").textContent =
+    `${hits} fynd · ${rows.length}/${listings.length} annonser`;
+  $("empty").hidden = rows.length > 0;
+  $("empty").textContent = listings.length === 0
+    ? "Inga annonser ännu — första skrapningen pågår."
+    : "Inget matchar filtren.";
+
+  document.querySelectorAll("thead th[data-sort]").forEach((th) => {
+    th.querySelector(".arrow").textContent =
+      th.dataset.sort === sortKey ? (sortDir < 0 ? "▼" : "▲") : "";
+  });
+}
+
+async function toggleBroken(id, broken) {
+  const res = await fetch(`/api/listings/${id}/broken`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ broken }),
+  });
+  if (!res.ok) { alert("Kunde inte spara: " + (await res.text())); return; }
+  const l = listings.find((x) => x.id === id);
+  if (l) l.broken = broken;
+  render();
+}
+
+async function load() {
+  const [st, ls] = await Promise.all([
+    fetch("/api/status").then((r) => r.json()),
+    fetch("/api/listings").then((r) => r.json()),
+  ]);
+  listings = ls || [];
+
+  const models = [...new Set(listings.map((l) => l.model))].sort();
+  const sel = $("model"), cur = sel.value;
+  sel.length = 1;
+  for (const m of models) sel.add(new Option(m, m));
+  sel.value = models.includes(cur) ? cur : "";
+
+  const t = st.last_run_start ? new Date(st.last_run_start) : null;
+  $("status").innerHTML =
+    `senaste körning ${t ? t.toLocaleTimeString("sv-SE") : "—"} (${esc(st.last_run_duration || "…")})` +
+    `<br>${st.sold_total ?? 0} sålda i historik · ${st.hits_last_run ?? 0} träffar senaste körningen` +
+    (st.last_run_error ? `<br>fel: ${esc(st.last_run_error)}` : "");
+  render();
+}
+
+document.querySelector("tbody").addEventListener("click", (e) => {
+  const btn = e.target.closest("button.flag");
+  if (btn) toggleBroken(Number(btn.dataset.id), btn.dataset.broken !== "true");
+});
+document.querySelectorAll("thead th[data-sort]").forEach((th) =>
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    sortDir = k === sortKey ? -sortDir : -1;
+    sortKey = k;
+    render();
+  }));
+for (const id of ["q", "model", "onlyHits", "showBroken"])
+  $(id).addEventListener("input", render);
+
+load().catch((err) => { $("status").textContent = "kunde inte ladda: " + err; });
+setInterval(() => load().catch(() => {}), 120000);
+</script>
+</body>
+</html>
