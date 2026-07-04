@@ -14,7 +14,7 @@
   --deal: #0e7a46;
   --deal-wash: #e7f4eb;
   --over: #b0b9b3;
-  --broken: #9aa4ab;
+  --danger: #b3362a;
   --focus: #1d5fbf;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --sans: system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -30,7 +30,7 @@
     --deal: #4cc98a;
     --deal-wash: #223c2f;
     --over: #55605a;
-    --broken: #6b7671;
+    --danger: #e06552;
     --focus: #7aa7e8;
   }
 }
@@ -147,11 +147,13 @@ td.num.price { font-weight: 700; }
 .gap b.above { color: var(--muted); font-weight: 400; }
 .gap .na { color: var(--muted); font: 12px var(--mono); }
 
-tr.broken td { color: var(--broken); }
-tr.broken td.title a, tr.broken td.num { text-decoration: line-through; color: var(--broken); }
+/* A broken device: normal row, red identity, never a hit. */
 tr.broken { background: transparent !important; box-shadow: none !important; }
-tr.broken .gap .fill { background: var(--broken); }
-tr.broken .gap b { color: var(--broken); }
+tr.broken td.title a, tr.broken td.num.price { color: var(--danger); }
+.broken-mark { color: var(--danger); font-weight: 600; }
+
+td.actions { white-space: nowrap; text-align: right; }
+td.actions button + button { margin-left: 6px; }
 
 button.flag {
   font: 12px var(--sans);
@@ -200,7 +202,6 @@ tr.broken button.flag { border-style: dashed; }
   <input type="search" id="q" placeholder="Sök titel eller modell …" autocomplete="off">
   <select id="model"><option value="">Alla modeller</option></select>
   <label class="check" id="onlyHitsWrap"><input type="checkbox" id="onlyHits"> Endast fynd</label>
-  <label class="check" id="showBrokenWrap"><input type="checkbox" id="showBroken" checked> Visa trasiga</label>
   <span id="summary"></span>
 </div>
 
@@ -279,7 +280,7 @@ function titleCell(l, extra) {
 function activeRow(l) {
   const sub =
     (l.is_hit && !l.broken ? ' <span class="badge">fynd</span>' : "") +
-    (l.broken ? " · markerad trasig" : "");
+    (l.broken ? ' · <span class="broken-mark">trasig</span>' : "");
   return `<tr class="${l.broken ? "broken" : l.is_hit ? "hit" : ""}">
     ${titleCell(l, sub)}
     <td class="num price">${kr(l.price)}</td>
@@ -287,8 +288,11 @@ function activeRow(l) {
     <td>${gapCell(l)}</td>
     <td class="num col-samples">${l.samples}</td>
     <td class="col-seen mono">${seenText(l.first_seen)}</td>
-    <td><button class="flag" data-id="${l.id}" data-broken="${l.broken}">
-      ${l.broken ? "Ångra" : "Trasig"}</button></td>
+    <td class="actions">
+      <button class="flag" data-id="${l.id}" data-broken="${l.broken}">
+        ${l.broken ? "Ångra" : "Trasig"}</button>
+      <button class="flag excl" data-id="${l.id}">Exkludera</button>
+    </td>
   </tr>`;
 }
 
@@ -320,26 +324,21 @@ function render() {
   const model = $("model").value;
   const isActive = view === "active";
   $("onlyHitsWrap").style.display = isActive ? "" : "none";
-  $("showBrokenWrap").style.display = isActive ? "" : "none";
   $("thead").innerHTML = HEADS[view];
 
   const source = isActive ? listings : bargains;
   let rows = source.filter((l) =>
     (!q || (l.title + " " + l.model).toLowerCase().includes(q)) &&
     (!model || l.model === model));
-  if (isActive) {
+  if (isActive && $("onlyHits").checked) {
     // is_hit is purely price-based; a broken flag vetoes it visually, but the
-    // row stays (greyed) in the fynd view so an accidental flag can be undone.
-    const onlyHits = $("onlyHits").checked;
-    const showBroken = $("showBroken").checked;
-    rows = rows.filter((l) =>
-      (!onlyHits || l.is_hit) && (showBroken || !l.broken));
+    // row stays (red) in the fynd view so an accidental flag can be undone.
+    rows = rows.filter((l) => l.is_hit);
   }
 
   const { key, dir } = sortState[view];
   const val = SORTVALS[key];
-  rows.sort((a, b) =>
-    ((a.broken ?? 0) - (b.broken ?? 0)) || dir * (val(a) - val(b)));
+  rows.sort((a, b) => dir * (val(a) - val(b)));
 
   $("rows").innerHTML = rows.map(isActive ? activeRow : bargainRow).join("");
 
@@ -359,6 +358,15 @@ function render() {
     th.querySelector(".arrow").textContent =
       th.dataset.sort === key ? (dir < 0 ? "▼" : "▲") : "";
   });
+}
+
+async function exclude(id) {
+  const l = listings.find((x) => x.id === id);
+  if (!confirm(`Ta bort "${l ? l.title : id}"?\nAnnonsen blockeras och kommer inte tillbaka vid nästa skrapning.`)) return;
+  const res = await fetch(`/api/listings/${id}/exclude`, { method: "POST" });
+  if (!res.ok) { alert("Kunde inte ta bort: " + (await res.text())); return; }
+  listings = listings.filter((x) => x.id !== id);
+  render();
 }
 
 async function toggleBroken(id, broken) {
@@ -398,7 +406,9 @@ async function load() {
 
 document.querySelector("tbody").addEventListener("click", (e) => {
   const btn = e.target.closest("button.flag");
-  if (btn) toggleBroken(Number(btn.dataset.id), btn.dataset.broken !== "true");
+  if (!btn) return;
+  if (btn.classList.contains("excl")) exclude(Number(btn.dataset.id));
+  else toggleBroken(Number(btn.dataset.id), btn.dataset.broken !== "true");
 });
 $("thead").addEventListener("click", (e) => {
   const th = e.target.closest("th[data-sort]");
@@ -415,7 +425,7 @@ document.querySelectorAll(".tabs button").forEach((btn) =>
       b.classList.toggle("active", b === btn));
     render();
   }));
-for (const id of ["q", "model", "onlyHits", "showBroken"])
+for (const id of ["q", "model", "onlyHits"])
   $(id).addEventListener("input", render);
 
 load().catch((err) => { $("status").textContent = "kunde inte ladda: " + err; });

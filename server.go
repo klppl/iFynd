@@ -94,6 +94,25 @@ func (a *App) Router() http.Handler {
 		writeJSON(w, map[string]any{"id": id, "broken": body.Broken})
 	})
 
+	// Remove a listing permanently: deleted from the active table and
+	// tombstoned so future scrapes never re-add it.
+	r.Post("/api/listings/{id}/exclude", func(w http.ResponseWriter, req *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(req, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		if err := a.store.Exclude(id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "unknown listing", http.StatusNotFound)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"id": id, "excluded": true})
+	})
+
 	// Historical sales that were bargains: sold below the bucket reference
 	// by at least the hit threshold.
 	r.Get("/api/bargains", func(w http.ResponseWriter, _ *http.Request) {

@@ -74,8 +74,11 @@ router (server.go); each `internal/` package is one stage.
   entirely; a bad guess polluting averages is worse than no signal.
 - `is_hit` in the API is purely price-based; the user-set `broken` flag is
   a veto on top (excluded from notifications server-side in `compare`,
-  greyed in the GUI). Notifications fire once per listing (`notified`
-  flag), retried next run if the notifier errors.
+  red in the GUI). Both user actions tombstone the id in
+  `blocked_listings`: `broken` keeps the row visible but blocks its future
+  sold price from the history; `excluded` deletes the row and blocks both
+  scrape paths from ever re-adding it. Notifications fire once per listing
+  (`notified` flag), retried next run if the notifier errors.
 - Scraping is throttled (`Throttle`, delay + jitter) with a real browser
   User-Agent. Keep it polite; don't add parallel fetching.
 

@@ -50,10 +50,14 @@ func (a *App) Run(ctx context.Context) error {
 	st.LastRunStart = start.UTC()
 
 	runErr := func() error {
-		if err := a.scrapeSold(ctx, &st); err != nil {
+		blocked, err := a.store.BlockedIDs()
+		if err != nil {
+			return fmt.Errorf("load blocklist: %w", err)
+		}
+		if err := a.scrapeSold(ctx, &st, blocked); err != nil {
 			return fmt.Errorf("scrape sold: %w", err)
 		}
-		actives, err := a.scrapeActive(ctx, &st)
+		actives, err := a.scrapeActive(ctx, &st, blocked)
 		if err != nil {
 			return fmt.Errorf("scrape active: %w", err)
 		}
@@ -92,7 +96,7 @@ func (a *App) Run(ctx context.Context) error {
 // records. On an empty DB it backfills up to BackfillPages; otherwise it stops
 // once a page contains only listings started before the SoldWindowDays cutoff
 // — everything that can have sold since the last run was listed after it.
-func (a *App) scrapeSold(ctx context.Context, st *Status) error {
+func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]string) error {
 	existing, err := a.store.SoldCount()
 	if err != nil {
 		return err
@@ -130,6 +134,11 @@ func (a *App) scrapeSold(ctx context.Context, st *Status) error {
 				pageOldest = it.StartDate
 			}
 			c, ok, reason := classify.Item(it)
+			if why, isBlocked := blocked[it.ItemID]; isBlocked {
+				// User verdict outranks the classifier: a broken or excluded
+				// listing's sale price must not enter the price history.
+				ok, reason = false, "blocked: "+why
+			}
 			if ok && it.SoldPrice() < a.cfg.MinPrice {
 				// 1-3 kr "sales" are shipping surcharges, scams, or mistakes,
 				// never a working phone changing hands.
@@ -171,7 +180,7 @@ type activeItem struct {
 // scrapeActive walks all active fixed-price pages and upserts classified
 // listings. It returns this run's classified items so the comparison never
 // considers listings that have already ended.
-func (a *App) scrapeActive(ctx context.Context, st *Status) ([]activeItem, error) {
+func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]string) ([]activeItem, error) {
 	q := tradera.ActiveQuery(a.cfg.CategoryID)
 	var out []activeItem
 	total := 0
@@ -190,6 +199,9 @@ func (a *App) scrapeActive(ctx context.Context, st *Status) ([]activeItem, error
 		for i := range res.Items {
 			it := &res.Items[i]
 			st.ActiveScraped++
+			if blocked[it.ItemID] == "excluded" {
+				continue // user removed it; broken ones stay visible and keep upserting
+			}
 			c, ok, reason := classify.Item(it)
 			if ok && it.FixedPrice() < a.cfg.MinPrice {
 				ok, reason = false, fmt.Sprintf("implausible price %d kr", it.FixedPrice())

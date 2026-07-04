@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS active_listings (
 	broken     INTEGER NOT NULL DEFAULT 0    -- user-flagged in the GUI; excluded from hits
 );
 
+CREATE TABLE IF NOT EXISTS blocked_listings (
+	id         INTEGER PRIMARY KEY,         -- Tradera listing id
+	reason     TEXT NOT NULL,               -- broken | excluded
+	title      TEXT NOT NULL,
+	url        TEXT NOT NULL,
+	blocked_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS skipped_listings (
 	id       INTEGER PRIMARY KEY,
 	source   TEXT NOT NULL,                  -- sold | active
@@ -181,16 +189,73 @@ func (s *Store) Flags(id int64) (notified, broken bool, err error) {
 	return n != 0, b != 0, err
 }
 
-// SetBroken flags or unflags a listing as a broken device.
+// SetBroken flags or unflags a listing as a broken device. A broken listing
+// stays visible in the active table but is tombstoned in blocked_listings so
+// its price never enters the sold history when the phone eventually sells.
 func (s *Store) SetBroken(id int64, broken bool) error {
-	res, err := s.db.Exec(`UPDATE active_listings SET broken = ? WHERE id = ?`, broken, id)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return sql.ErrNoRows
+	defer tx.Rollback()
+	var title, url string
+	if err := tx.QueryRow(`SELECT title, url FROM active_listings WHERE id = ?`, id).Scan(&title, &url); err != nil {
+		return err // sql.ErrNoRows for unknown ids
 	}
-	return nil
+	if _, err := tx.Exec(`UPDATE active_listings SET broken = ? WHERE id = ?`, broken, id); err != nil {
+		return err
+	}
+	if broken {
+		_, err = tx.Exec(`INSERT OR REPLACE INTO blocked_listings (id, reason, title, url, blocked_at)
+			VALUES (?, 'broken', ?, ?, ?)`, id, title, url, time.Now().UTC().Format(time.RFC3339))
+	} else {
+		_, err = tx.Exec(`DELETE FROM blocked_listings WHERE id = ? AND reason = 'broken'`, id)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Exclude deletes a listing from the active table and tombstones it so no
+// future scrape (active or sold) ever brings it back.
+func (s *Store) Exclude(id int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var title, url string
+	if err := tx.QueryRow(`SELECT title, url FROM active_listings WHERE id = ?`, id).Scan(&title, &url); err != nil {
+		return err // sql.ErrNoRows for unknown ids
+	}
+	if _, err := tx.Exec(`DELETE FROM active_listings WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO blocked_listings (id, reason, title, url, blocked_at)
+		VALUES (?, 'excluded', ?, ?, ?)`, id, title, url, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// BlockedIDs returns every tombstoned listing id mapped to its reason.
+func (s *Store) BlockedIDs() (map[int64]string, error) {
+	rows, err := s.db.Query(`SELECT id, reason FROM blocked_listings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var reason string
+		if err := rows.Scan(&id, &reason); err != nil {
+			return nil, err
+		}
+		out[id] = reason
+	}
+	return out, rows.Err()
 }
 
 // ListActive returns all active listings, newest first.

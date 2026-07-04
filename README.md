@@ -42,9 +42,12 @@ with two tabs:
 
 - **Aktiva annonser** — all active listings with price, bucket median, a
   diverging price-gap bar, and sample count. Hits are highlighted; filters
-  for search/model/only-hits. The **Trasig** button flags a listing as a
-  broken device — it's greyed out, sorted last, and excluded from hits and
-  notifications (undo with **Ångra**).
+  for search/model/only-hits. Two actions per row:
+  - **Trasig** marks a broken device (red) — excluded from hits and
+    notifications, and its price never enters the sold history if it sells
+    (undo with **Ångra**).
+  - **Exkludera** deletes the listing and tombstones its id so no future
+    scrape re-adds it.
 - **Sålda fynd** — historical sales that went below the bucket reference by
   at least the hit threshold, including how many days each was listed before
   it sold (blank for records scraped before listing dates were stored).
@@ -55,6 +58,7 @@ with two tabs:
 - `GET /api/status` — last run stats
 - `GET /api/listings` — active listings with computed references and flags
 - `POST /api/listings/{id}/broken` — body `{"broken": true|false}`
+- `POST /api/listings/{id}/exclude` — delete + tombstone a listing
 - `GET /api/bargains` — historical below-reference sales with days-listed
 - `GET /api/hits` — hits from the most recent run
 - `GET /api/buckets` — sold-price buckets (count/min/max/mean)
