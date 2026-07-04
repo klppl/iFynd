@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS sold_listings (
 	sold_at    TEXT    NOT NULL,             -- RFC3339
 	listed_at  TEXT,                         -- RFC3339; NULL on rows scraped before the column existed
 	url        TEXT    NOT NULL,
-	scraped_at TEXT    NOT NULL
+	scraped_at TEXT    NOT NULL,
+	category   INTEGER NOT NULL DEFAULT 340186
 );
 CREATE INDEX IF NOT EXISTS idx_sold_bucket ON sold_listings(model, storage_gb, sold_at);
 
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS active_listings (
 	first_seen TEXT    NOT NULL,
 	last_seen  TEXT    NOT NULL,
 	notified   INTEGER NOT NULL DEFAULT 0,
-	broken     INTEGER NOT NULL DEFAULT 0    -- user-flagged in the GUI; excluded from hits
+	broken     INTEGER NOT NULL DEFAULT 0,   -- user-flagged in the GUI; excluded from hits
+	category   INTEGER NOT NULL DEFAULT 340186
 );
 
 CREATE TABLE IF NOT EXISTS blocked_listings (
@@ -72,6 +74,9 @@ func Open(path string) (*Store, error) {
 	addedColumns := []struct{ table, col, def string }{
 		{"active_listings", "broken", "INTEGER NOT NULL DEFAULT 0"},
 		{"sold_listings", "listed_at", "TEXT"},
+		// 340186 (iPhone) was the only category before multi-category support.
+		{"sold_listings", "category", "INTEGER NOT NULL DEFAULT 340186"},
+		{"active_listings", "category", "INTEGER NOT NULL DEFAULT 340186"},
 	}
 	for _, m := range addedColumns {
 		var n int
@@ -96,6 +101,7 @@ type SoldListing struct {
 	SoldAt    time.Time
 	ListedAt  time.Time // zero when unknown (rows from before the column existed)
 	URL       string
+	Category  int
 }
 
 // InsertSold appends a sold record; returns false if the id already existed.
@@ -106,12 +112,12 @@ func (s *Store) InsertSold(l SoldListing) (bool, error) {
 		listedAt = l.ListedAt.UTC().Format(time.RFC3339)
 	}
 	res, err := s.db.Exec(`INSERT INTO sold_listings
-		(id, model, storage_gb, price, title, sold_at, listed_at, url, scraped_at)
-		VALUES (?,?,?,?,?,?,?,?,?)
+		(id, model, storage_gb, price, title, sold_at, listed_at, url, scraped_at, category)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET listed_at = excluded.listed_at
 			WHERE sold_listings.listed_at IS NULL AND excluded.listed_at IS NOT NULL`,
 		l.ID, l.Model, l.StorageGB, l.Price, l.Title,
-		l.SoldAt.UTC().Format(time.RFC3339), listedAt, l.URL, time.Now().UTC().Format(time.RFC3339))
+		l.SoldAt.UTC().Format(time.RFC3339), listedAt, l.URL, time.Now().UTC().Format(time.RFC3339), l.Category)
 	if err != nil {
 		return false, err
 	}
@@ -151,6 +157,13 @@ func (s *Store) SoldCount() (int, error) {
 	return n, err
 }
 
+// SoldCountCategory drives the per-category backfill decision.
+func (s *Store) SoldCountCategory(categoryID int) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sold_listings WHERE category = ?`, categoryID).Scan(&n)
+	return n, err
+}
+
 type ActiveListing struct {
 	ID        int64
 	Model     string
@@ -162,6 +175,7 @@ type ActiveListing struct {
 	LastSeen  time.Time
 	Notified  bool
 	Broken    bool
+	Category  int
 }
 
 // UpsertActive inserts or refreshes an active listing. Price updates on
@@ -169,13 +183,13 @@ type ActiveListing struct {
 func (s *Store) UpsertActive(l ActiveListing) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.Exec(`INSERT INTO active_listings
-		(id, model, storage_gb, price, title, url, first_seen, last_seen)
-		VALUES (?,?,?,?,?,?,?,?)
+		(id, model, storage_gb, price, title, url, first_seen, last_seen, category)
+		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			price = excluded.price,
 			title = excluded.title,
 			last_seen = excluded.last_seen`,
-		l.ID, l.Model, l.StorageGB, l.Price, l.Title, l.URL, now, now)
+		l.ID, l.Model, l.StorageGB, l.Price, l.Title, l.URL, now, now, l.Category)
 	return err
 }
 

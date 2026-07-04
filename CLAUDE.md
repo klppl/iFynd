@@ -40,12 +40,17 @@ router (server.go); each `internal/` package is one stage.
   Pagination is `?paging=<page>.a<totalItemCount>.s0` (80 items/page).
   `testdata/sold_page.html` is a real capture — if Tradera changes their
   frontend, re-capture it and fix the parser against it.
-- **internal/classify** — (model, storage) bucketing. Prefers Tradera's
-  structured attributes (`mobile_model`, `mobile_disk_memory`, `condition`);
-  falls back to title regexes. Rejects accessories/bundles/broken/ambiguous
-  listings with a reason; those land in the `skipped_listings` table for
-  auditing. Raw titles are stored everywhere so misclassifications can be
-  audited later.
+- **internal/classify** — (model, storage) bucketing, per family
+  (`IPhone`/`IPad`, selected by the category config). iPhones prefer
+  Tradera's structured attributes (`mobile_model`, `mobile_disk_memory`,
+  `condition`) with title regexes as fallback. The iPad category exposes NO
+  model/storage attributes, so ipad.go normalizes titles across generation
+  ("3:e gen"/"7th"/"sjunde generationen"), chip (M1–M4, A16, A17 Pro),
+  release year, and Pro/Air screen size into one canonical bucket — and
+  skips anything underdetermined (e.g. "iPad Pro 12.9" alone spans six
+  generations). Rejects accessories/bundles/broken/ambiguous listings with
+  a reason; those land in the `skipped_listings` table for auditing. Raw
+  titles are stored everywhere so misclassifications can be audited later.
 - **internal/store** — SQLite. `sold_listings` is append-only history
   (INSERT OR IGNORE on Tradera id); `active_listings` is upserted with
   `last_seen` refreshed, preserving `first_seen`/`notified`/`broken`.

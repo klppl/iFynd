@@ -23,8 +23,12 @@ type Hit struct {
 }
 
 func (h Hit) Message() string {
-	return fmt.Sprintf("%s %dGB för %d kr — %.0f%% under snittet (%.0f kr, %d sålda)\n%s",
-		h.Model, h.StorageGB, h.Price, h.PctBelow, h.RefPrice, h.Samples, h.URL)
+	storage := fmt.Sprintf("%dGB", h.StorageGB)
+	if h.StorageGB >= 1024 {
+		storage = fmt.Sprintf("%dTB", h.StorageGB/1024)
+	}
+	return fmt.Sprintf("%s %s för %d kr — %.0f%% under snittet (%.0f kr, %d sålda)\n%s",
+		h.Model, storage, h.Price, h.PctBelow, h.RefPrice, h.Samples, h.URL)
 }
 
 type Notifier interface {

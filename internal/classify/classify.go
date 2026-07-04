@@ -15,9 +15,25 @@ import (
 	"github.com/klppl/ifynd/internal/tradera"
 )
 
+// Family selects which device family's model grammar to apply.
+type Family string
+
+const (
+	IPhone Family = "iphone"
+	IPad   Family = "ipad"
+)
+
+func ParseFamily(s string) (Family, error) {
+	switch Family(s) {
+	case IPhone, IPad:
+		return Family(s), nil
+	}
+	return "", fmt.Errorf("unknown family %q (want iphone or ipad)", s)
+}
+
 // Result is a confident classification.
 type Result struct {
-	Model     string // canonical, e.g. "iPhone 13 Pro"
+	Model     string // canonical, e.g. "iPhone 13 Pro" or "iPad Pro 11 (gen 3)"
 	StorageGB int    // 1 TB = 1024
 }
 
@@ -33,16 +49,37 @@ var junkWords = []string{
 	"cracked", "broken", "faulty", "for parts", "spare part",
 	// locked
 	"icloud", "operatörslåst", "simlåst", "sim-låst", "låst till",
-	// accessories / empty boxes / bundles
+	// accessories / empty boxes / bundles / multi-lots
 	"skal", "fodral", "case", "hörlur", "airpod", "laddare", "kabel",
 	"adapter", "skärmskydd", "pansarglas", "endast kartong", "tom kartong",
 	"bara kartong", "kartong till", "box only", "empty box", "skärm till",
 	"display till", "batteri till", "moderkort", "attrapp", "dummy",
-	"kopia", "replika", "watch", "paket", "ipad",
+	"kopia", "replika", "watch", "paket", "stycken", " pack",
 	// lookalikes ("ser ut som en iPhone 17") sold under the pricier model
 	"ser ut som", "liknar", "ser ut att vara",
-	// not a phone at all
+	// not a device at all
 	"extra frakt", "fraktkostnad", "ordernr", "box till", "låda till",
+}
+
+// ipadFamilyPrefix maps the tablet_brand facet to the canonical model prefix
+// the title must agree with. Bare "iPad" is NOT here: sellers use it as a
+// generic default (observed: bulk sellers filing "iPad Air 2" under it), so
+// like a bare "iPhone SE" attribute it defers to the more specific title.
+var ipadFamilyPrefix = map[string]string{
+	"ipad air":  "iPad Air",
+	"ipad pro":  "iPad Pro",
+	"ipad mini": "iPad mini",
+}
+
+// multiLotRe catches "3 iPad gen 5", "2 st iPhone" — lots sold as one
+// listing, whose single price would poison a per-device bucket. Single digit
+// only, so years ("2021 iPad Pro") never match.
+var multiLotRe = regexp.MustCompile(`(?i)\b\d\s*(?:st\.?\s+)?(?:ipad|iphone)`)
+
+// junkByFamily rejects the other family's devices and bundles.
+var junkByFamily = map[Family][]string{
+	IPhone: {"ipad", "surfplatta"},
+	IPad:   {"iphone", "tangentbord till", "penna till", "pencil till"},
 }
 
 // junkPrefixes catch titles that OPEN with a non-phone word where the word
@@ -52,10 +89,11 @@ var junkPrefixes = []string{"kartong", "box ", "tom "}
 
 var badConditions = []string{"defekt", "reparation"}
 
-// storageRe matches "128GB", "128 GB", "1TB", "1 tb".
-var storageRe = regexp.MustCompile(`(?i)\b(\d{1,4})\s*(gb|tb)\b`)
+// storageRe matches "128GB", "128 GB", "1TB", "1 tb", "128G". The whitelist
+// keeps bare-G matches honest ("5G" is a network, not 5 gigabytes).
+var storageRe = regexp.MustCompile(`(?i)\b(\d{1,4})\s*(gb|tb|g)\b`)
 
-var validGB = map[int]bool{8: true, 16: true, 32: true, 64: true, 128: true, 256: true, 512: true, 1024: true}
+var validGB = map[int]bool{8: true, 16: true, 32: true, 64: true, 128: true, 256: true, 512: true, 1024: true, 2048: true}
 
 // modelRe: base identifier followed optionally by a variant. Longest
 // alternatives first so "16e"/"6s"/"xs" win over "16"/"6"/"x".
@@ -64,10 +102,10 @@ var modelRe = regexp.MustCompile(`(?i)\biphone\s*(3gs|3g|4s|5s|5c|6s|16e|17|16|1
 var seYearRe = regexp.MustCompile(`(?i)\bse\b.{0,20}?\b(2016|2020|2022)\b`)
 
 // Item classifies a Tradera listing. When ok is false, reason says why.
-func Item(it *tradera.Item) (res Result, ok bool, reason string) {
+func Item(it *tradera.Item, fam Family) (res Result, ok bool, reason string) {
 	title := strings.ToLower(it.ShortDescription)
 
-	for _, w := range junkWords {
+	for _, w := range append(junkWords, junkByFamily[fam]...) {
 		if strings.Contains(title, w) {
 			return res, false, "junk word: " + w
 		}
@@ -76,6 +114,9 @@ func Item(it *tradera.Item) (res Result, ok bool, reason string) {
 		if strings.HasPrefix(title, p) {
 			return res, false, "junk prefix: " + p
 		}
+	}
+	if multiLotRe.MatchString(title) {
+		return res, false, "multi-device lot"
 	}
 	if cond := strings.ToLower(it.Attr("condition")); cond != "" {
 		for _, bad := range badConditions {
@@ -86,6 +127,32 @@ func Item(it *tradera.Item) (res Result, ok bool, reason string) {
 	}
 	if brand := it.Attr("mobile_brand"); brand != "" && !strings.EqualFold(brand, "apple") {
 		return res, false, "brand: " + brand
+	}
+	// In the iPad category the "brand" facet holds the iPad family
+	// ("iPad", "iPad Air", "iPad Pro", "iPad mini"), not "Apple".
+	tabletBrand := strings.ToLower(it.Attr("tablet_brand"))
+	if tabletBrand != "" && tabletBrand != "apple" && !strings.HasPrefix(tabletBrand, "ipad") {
+		return res, false, "brand: " + it.Attr("tablet_brand")
+	}
+
+	if fam == IPad {
+		// No model/storage attributes exist in this category — the model
+		// comes from the title, cross-checked against the family facet.
+		model := ipadModelFromTitle(it.ShortDescription)
+		if model == "" {
+			return res, false, "no confident model"
+		}
+		if want, ok := ipadFamilyPrefix[tabletBrand]; ok && !strings.HasPrefix(model, want) {
+			return res, false, fmt.Sprintf("family mismatch: attr=%s title=%s", it.Attr("tablet_brand"), model)
+		}
+		gb, conflict := storageFromTitle(title)
+		if conflict {
+			return res, false, "ambiguous storage in title"
+		}
+		if gb == 0 {
+			return res, false, "no storage size"
+		}
+		return Result{Model: model, StorageGB: gb}, true, ""
 	}
 
 	// Sellers get the structured attributes wrong ("iPhone 16" attribute on

@@ -54,12 +54,16 @@ func (a *App) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("load blocklist: %w", err)
 		}
-		if err := a.scrapeSold(ctx, &st, blocked); err != nil {
-			return fmt.Errorf("scrape sold: %w", err)
-		}
-		actives, err := a.scrapeActive(ctx, &st, blocked)
-		if err != nil {
-			return fmt.Errorf("scrape active: %w", err)
+		var actives []activeItem
+		for _, cat := range a.cfg.Categories {
+			if err := a.scrapeSold(ctx, &st, blocked, cat); err != nil {
+				return fmt.Errorf("scrape sold %d: %w", cat.ID, err)
+			}
+			catActives, err := a.scrapeActive(ctx, &st, blocked, cat)
+			if err != nil {
+				return fmt.Errorf("scrape active %d: %w", cat.ID, err)
+			}
+			actives = append(actives, catActives...)
 		}
 		if err := a.compare(ctx, actives, &st); err != nil {
 			return fmt.Errorf("compare: %w", err)
@@ -96,8 +100,8 @@ func (a *App) Run(ctx context.Context) error {
 // records. On an empty DB it backfills up to BackfillPages; otherwise it stops
 // once a page contains only listings started before the SoldWindowDays cutoff
 // — everything that can have sold since the last run was listed after it.
-func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]string) error {
-	existing, err := a.store.SoldCount()
+func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]string, cat Category) error {
+	existing, err := a.store.SoldCountCategory(cat.ID)
 	if err != nil {
 		return err
 	}
@@ -106,10 +110,10 @@ func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]stri
 	if existing == 0 {
 		maxPages = a.cfg.BackfillPages
 		cutoff = time.Time{} // take all history Tradera still serves
-		slog.Info("empty database, backfilling sold history", "max_pages", maxPages)
+		slog.Info("no sold history for category, backfilling", "category", cat.ID, "max_pages", maxPages)
 	}
 
-	q := tradera.SoldQuery(a.cfg.CategoryID)
+	q := tradera.SoldQuery(cat.ID)
 	total := 0
 	for page := 1; page <= maxPages; page++ {
 		if page > 1 {
@@ -133,7 +137,7 @@ func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]stri
 			if it.StartDate.Before(pageOldest) {
 				pageOldest = it.StartDate
 			}
-			c, ok, reason := classify.Item(it)
+			c, ok, reason := classify.Item(it, cat.Family)
 			if why, isBlocked := blocked[it.ItemID]; isBlocked {
 				// User verdict outranks the classifier: a broken or excluded
 				// listing's sale price must not enter the price history.
@@ -153,6 +157,7 @@ func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]stri
 				ID: it.ItemID, Model: c.Model, StorageGB: c.StorageGB,
 				Price: it.SoldPrice(), Title: it.ShortDescription,
 				SoldAt: it.EndDate, ListedAt: it.StartDate, URL: it.ItemURL,
+				Category: cat.ID,
 			})
 			if err != nil {
 				return err
@@ -180,8 +185,8 @@ type activeItem struct {
 // scrapeActive walks all active fixed-price pages and upserts classified
 // listings. It returns this run's classified items so the comparison never
 // considers listings that have already ended.
-func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]string) ([]activeItem, error) {
-	q := tradera.ActiveQuery(a.cfg.CategoryID)
+func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]string, cat Category) ([]activeItem, error) {
+	q := tradera.ActiveQuery(cat.ID)
 	var out []activeItem
 	total := 0
 	for page := 1; page <= a.cfg.ActiveMaxPages; page++ {
@@ -202,7 +207,7 @@ func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]st
 			if blocked[it.ItemID] == "excluded" {
 				continue // user removed it; broken ones stay visible and keep upserting
 			}
-			c, ok, reason := classify.Item(it)
+			c, ok, reason := classify.Item(it, cat.Family)
 			if ok && it.FixedPrice() < a.cfg.MinPrice {
 				ok, reason = false, fmt.Sprintf("implausible price %d kr", it.FixedPrice())
 			}
@@ -214,6 +219,7 @@ func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]st
 			l := store.ActiveListing{
 				ID: it.ItemID, Model: c.Model, StorageGB: c.StorageGB,
 				Price: it.FixedPrice(), Title: it.ShortDescription, URL: it.ItemURL,
+				Category: cat.ID,
 			}
 			if err := a.store.UpsertActive(l); err != nil {
 				return nil, err

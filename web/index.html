@@ -225,7 +225,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => s.replace(/[&<>"']/g, (c) =>
   ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const kr = (n) => Math.round(n).toLocaleString("sv-SE");
-const gbText = (gb) => gb >= 1024 ? "1 TB" : gb + " GB";
+const gbText = (gb) => gb >= 1024 ? (gb / 1024) + " TB" : gb + " GB";
 
 const HEADS = {
   active: `<tr>

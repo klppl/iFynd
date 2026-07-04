@@ -1,8 +1,8 @@
 # iFynd
 
-Finds underpriced iPhones on [Tradera](https://www.tradera.com) by comparing
-active fixed-price ("köp nu") listings against historical sold prices, per
-(model, storage) bucket.
+Finds underpriced iPhones and iPads on [Tradera](https://www.tradera.com) by
+comparing active fixed-price ("köp nu") listings against historical sold
+prices, per (model, storage) bucket.
 
 ## How it works
 
@@ -11,16 +11,18 @@ result as JSON in `self.__next_f.push()` script chunks — including structured
 attributes (`mobile_model`, `mobile_disk_memory`, `condition`) that are more
 reliable than the free-text titles. iFynd:
 
-1. Scrapes sold listings (`itemStatus=Sold&sortBy=AddedOn`, category 340186)
-   into an append-only price history. First run backfills everything Tradera
-   still serves (~90 days); later runs only walk pages until listings are
-   older than `IFYND_SOLD_WINDOW_DAYS`.
+1. Scrapes sold listings (`itemStatus=Sold&sortBy=AddedOn`) for each
+   configured category into an append-only price history. A category with no
+   history backfills everything Tradera still serves (~90 days); later runs
+   only walk pages until listings are older than `IFYND_SOLD_WINDOW_DAYS`.
 2. Scrapes active fixed-price listings and upserts them (dedup on Tradera
    listing id, `last_seen` refreshed each run).
-3. Classifies each listing into a (model, storage) bucket — structured
-   attributes first, title parsing as fallback. Accessories, bundles,
-   broken/parts phones and ambiguous titles are skipped and logged to
-   `skipped_listings` for auditing.
+3. Classifies each listing into a (model, storage) bucket. iPhones use
+   Tradera's structured attributes first with title parsing as fallback;
+   iPads have no model attributes, so titles are normalized across
+   generation/chip/year/screen-size spellings ("3:e gen", "M1", "2021",
+   "12.9"). Accessories, bundles, broken/parts devices and ambiguous titles
+   are skipped and logged to `skipped_listings` for auditing.
 4. For each bucket with ≥ `IFYND_MIN_SAMPLES` sold records in the lookback
    window, computes a reference price (median by default, or trimmed mean)
    and flags active listings more than `IFYND_THRESHOLD_PCT` below it.
@@ -82,4 +84,4 @@ with two tabs:
 | `IFYND_REQUEST_DELAY` | `1500ms` | Delay between page fetches (+ jitter) |
 | `IFYND_NOTIFIER` | `log` | Notification channel |
 | `IFYND_HTTP_ADDR` | `:8080` | API listen address |
-| `IFYND_CATEGORY` | `340186` | Tradera category (iPhone) |
+| `IFYND_CATEGORIES` | `340186:iphone,342496:ipad` | Tradera categories as `<id>:<family>` pairs |

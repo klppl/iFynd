@@ -11,20 +11,29 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/klppl/ifynd/internal/analyze"
+	"github.com/klppl/ifynd/internal/classify"
 	"github.com/klppl/ifynd/internal/notify"
 	"github.com/klppl/ifynd/internal/store"
 	"github.com/klppl/ifynd/internal/tradera"
 )
 
+// Category pairs a Tradera category id with the classifier family that
+// understands its listings.
+type Category struct {
+	ID     int
+	Family classify.Family
+}
+
 type Config struct {
 	DBPath       string
 	Interval     time.Duration
 	HTTPAddr     string
-	CategoryID   int
+	Categories   []Category
 	ThresholdPct float64 // min % below reference to count as a hit
 	MinSamples   int     // min sold records before trusting a bucket
 	MinPrice     int     // SEK; listings below this are junk/scam, not phones
@@ -56,7 +65,7 @@ func loadConfig() (Config, error) {
 	if cfg.RequestDelay, err = envDuration("IFYND_REQUEST_DELAY", 1500*time.Millisecond); err != nil {
 		return cfg, err
 	}
-	if cfg.CategoryID, err = envInt("IFYND_CATEGORY", 340186); err != nil {
+	if cfg.Categories, err = parseCategories(envStr("IFYND_CATEGORIES", "340186:iphone,342496:ipad")); err != nil {
 		return cfg, err
 	}
 	if cfg.ThresholdPct, err = envFloat("IFYND_THRESHOLD_PCT", 15); err != nil {
@@ -90,6 +99,30 @@ func loadConfig() (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// parseCategories parses "340186:iphone,342496:ipad".
+func parseCategories(s string) ([]Category, error) {
+	var out []Category
+	for _, part := range strings.Split(s, ",") {
+		id, fam, ok := strings.Cut(strings.TrimSpace(part), ":")
+		if !ok {
+			return nil, fmt.Errorf("IFYND_CATEGORIES: %q is not <id>:<family>", part)
+		}
+		n, err := strconv.Atoi(id)
+		if err != nil {
+			return nil, fmt.Errorf("IFYND_CATEGORIES: %w", err)
+		}
+		f, err := classify.ParseFamily(fam)
+		if err != nil {
+			return nil, fmt.Errorf("IFYND_CATEGORIES: %w", err)
+		}
+		out = append(out, Category{ID: n, Family: f})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("IFYND_CATEGORIES: no categories configured")
+	}
+	return out, nil
 }
 
 func envStr(key, def string) string {
@@ -186,7 +219,11 @@ func main() {
 		}
 	}()
 
-	slog.Info("starting", "interval", cfg.Interval, "category", cfg.CategoryID,
+	cats := make([]string, len(cfg.Categories))
+	for i, c := range cfg.Categories {
+		cats[i] = fmt.Sprintf("%d(%s)", c.ID, c.Family)
+	}
+	slog.Info("starting", "interval", cfg.Interval, "categories", strings.Join(cats, ","),
 		"threshold_pct", cfg.ThresholdPct, "metric", string(cfg.Metric), "min_samples", cfg.MinSamples)
 
 	ticker := time.NewTicker(cfg.Interval)
