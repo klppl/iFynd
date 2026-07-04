@@ -1,0 +1,88 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Go service that finds underpriced iPhones on Tradera by comparing active
+fixed-price ("köp nu") listings against historical sold prices per
+(model, storage) bucket. Runs on a VPS via docker-compose. No CGO
+(modernc.org/sqlite).
+
+## Commands
+
+```sh
+go build ./... && go vet ./...   # build + vet
+go test ./...                    # all tests
+go test ./internal/classify -run TestClassifyRejects -v   # single test
+go run . --once                  # one real scrape+compare cycle (hits Tradera)
+go run .                         # loop + GUI/API on :8080
+docker compose up -d --build     # production
+```
+
+For a fast live test without a full backfill:
+`IFYND_DB_PATH=/tmp/t.db IFYND_BACKFILL_PAGES=3 go run . --once`
+
+All config is `IFYND_*` env vars with defaults in `loadConfig()` (main.go);
+the README documents them.
+
+## Architecture
+
+Pipeline per run (`App.Run` in app.go): scrape sold → scrape active →
+classify → compare → notify. Root package holds the loop, config, and chi
+router (server.go); each `internal/` package is one stage.
+
+- **internal/tradera** — fetching + parsing. Tradera category pages are
+  Next.js RSC; the full search result is JSON embedded in
+  `self.__next_f.push([1,"..."])` script chunks, NOT in the visible HTML.
+  `ParseSearchPage` concatenates all chunks, finds the
+  `receiveSearchResults` action, and JSON-decodes its `items` array.
+  Pagination is `?paging=<page>.a<totalItemCount>.s0` (80 items/page).
+  `testdata/sold_page.html` is a real capture — if Tradera changes their
+  frontend, re-capture it and fix the parser against it.
+- **internal/classify** — (model, storage) bucketing. Prefers Tradera's
+  structured attributes (`mobile_model`, `mobile_disk_memory`, `condition`);
+  falls back to title regexes. Rejects accessories/bundles/broken/ambiguous
+  listings with a reason; those land in the `skipped_listings` table for
+  auditing. Raw titles are stored everywhere so misclassifications can be
+  audited later.
+- **internal/store** — SQLite. `sold_listings` is append-only history
+  (INSERT OR IGNORE on Tradera id); `active_listings` is upserted with
+  `last_seen` refreshed, preserving `first_seen`/`notified`/`broken`.
+  Schema changes need a migration in `Open()` (see the `broken` column
+  pattern: pragma_table_info check + ALTER TABLE).
+- **internal/analyze** — median/trimmed-mean reference price and hit
+  threshold math. Pure functions, no I/O.
+- **internal/notify** — `Notifier` interface; `log` is the only
+  implementation. New channels (ntfy/Discord) get registered in `New()`
+  and selected via `IFYND_NOTIFIER`.
+- **web/index.html** — the whole GUI, embedded via `go:embed` in server.go.
+  Vanilla JS, no external assets (must work offline), Swedish UI copy,
+  light+dark via `prefers-color-scheme`.
+
+## Domain invariants (why the code is the way it is)
+
+- Sold items are scraped with `sortBy=AddedOn` because Tradera has **no
+  sort-by-end-date**; the default (relevance) returns months-old items
+  first. AddedOn-descending bounds incremental depth: anything that sold
+  since the last run was *listed* within `IFYND_SOLD_WINDOW_DAYS`.
+- For `AuctionBin` items, `price` is the current **bid**; the fixed price
+  is `buyNowPrice` (`Item.FixedPrice()`). Sold `price` is the final price.
+- Reference prices use median (or trimmed mean), never raw mean — the
+  history contains 1 kr auctions and wishful 3× listings.
+- A bucket needs ≥ `IFYND_MIN_SAMPLES` sold records or it's ignored
+  entirely; a bad guess polluting averages is worse than no signal.
+- `is_hit` in the API is purely price-based; the user-set `broken` flag is
+  a veto on top (excluded from notifications server-side in `compare`,
+  greyed in the GUI). Notifications fire once per listing (`notified`
+  flag), retried next run if the notifier errors.
+- Scraping is throttled (`Throttle`, delay + jitter) with a real browser
+  User-Agent. Keep it polite; don't add parallel fetching.
+
+## Verification expectation
+
+After changes, run the unit tests AND a live `--once` run (see fast-test
+command above), then check the run-summary log line (scraped/new/skipped/
+buckets/hits counts) for sanity. For GUI changes, screenshot with headless
+Chrome against a running server; note this environment forces dark mode, so
+verify light mode by stripping the dark media query into a temp copy.
