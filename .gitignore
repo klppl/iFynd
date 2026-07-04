@@ -1,0 +1,4 @@
+/ifynd
+*.db
+*.db-wal
+*.db-shm

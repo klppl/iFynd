@@ -1,0 +1,19 @@
+services:
+  ifynd:
+    build: .
+    container_name: ifynd
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      IFYND_INTERVAL: 30m
+      IFYND_THRESHOLD_PCT: 15
+      IFYND_MIN_SAMPLES: 5
+      IFYND_METRIC: median          # or trimmed_mean (with IFYND_TRIM_PCT)
+      IFYND_LOOKBACK_DAYS: 90
+      IFYND_NOTIFIER: log
+    volumes:
+      - ifynd-data:/data
+
+volumes:
+  ifynd-data:
