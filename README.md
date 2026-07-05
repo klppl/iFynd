@@ -4,6 +4,16 @@ Finds underpriced iPhones and iPads on [Tradera](https://www.tradera.com) by
 comparing active fixed-price ("köp nu") listings against historical sold
 prices, per (model, storage) bucket.
 
+**Aktiva annonser** — live listings vs their bucket median; hits highlighted,
+broken devices marked red and quarantined from the stats:
+
+![Active listings](docs/active-listings.png)
+
+**Sålda fynd** — historical sales that went below the median, with how long
+each listing took to sell:
+
+![Sold bargains](docs/sold-bargains.png)
+
 ## How it works
 
 Tradera category pages are Next.js RSC pages that embed the complete search
