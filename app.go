@@ -219,7 +219,7 @@ func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]st
 			l := store.ActiveListing{
 				ID: it.ItemID, Model: c.Model, StorageGB: c.StorageGB,
 				Price: it.FixedPrice(), Title: it.ShortDescription, URL: it.ItemURL,
-				Category: cat.ID,
+				Category: cat.ID, ListedAt: it.StartDate,
 			}
 			if err := a.store.UpsertActive(l); err != nil {
 				return nil, err

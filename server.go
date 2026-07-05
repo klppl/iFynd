@@ -26,10 +26,11 @@ type ListingView struct {
 	Model     string    `json:"model"`
 	StorageGB int       `json:"storage_gb"`
 	Price     int       `json:"price"`
-	Title     string    `json:"title"`
-	URL       string    `json:"url"`
-	FirstSeen time.Time `json:"first_seen"`
-	Notified  bool      `json:"notified"`
+	Title     string     `json:"title"`
+	URL       string     `json:"url"`
+	FirstSeen time.Time  `json:"first_seen"`
+	ListedAt  *time.Time `json:"listed_at,omitempty"` // nil on pre-migration rows
+	Notified  bool       `json:"notified"`
 	Broken    bool      `json:"broken"`
 	RefPrice  float64   `json:"ref_price"` // 0 when the bucket has too few samples
 	Samples   int       `json:"samples"`
@@ -209,6 +210,10 @@ func (a *App) listingViews() ([]ListingView, error) {
 			Price: l.Price, Title: l.Title, URL: l.URL,
 			FirstSeen: l.FirstSeen, Notified: l.Notified, Broken: l.Broken,
 			Samples: samples,
+		}
+		if !l.ListedAt.IsZero() {
+			t := l.ListedAt
+			v.ListedAt = &t
 		}
 		if ref > 0 {
 			v.RefPrice = ref

@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS active_listings (
 	last_seen  TEXT    NOT NULL,
 	notified   INTEGER NOT NULL DEFAULT 0,
 	broken     INTEGER NOT NULL DEFAULT 0,   -- user-flagged in the GUI; excluded from hits
-	category   INTEGER NOT NULL DEFAULT 340186
+	category   INTEGER NOT NULL DEFAULT 340186,
+	listed_at  TEXT                          -- Tradera startDate; NULL only on pre-migration rows
 );
 
 CREATE TABLE IF NOT EXISTS blocked_listings (
@@ -77,6 +78,7 @@ func Open(path string) (*Store, error) {
 		// 340186 (iPhone) was the only category before multi-category support.
 		{"sold_listings", "category", "INTEGER NOT NULL DEFAULT 340186"},
 		{"active_listings", "category", "INTEGER NOT NULL DEFAULT 340186"},
+		{"active_listings", "listed_at", "TEXT"}, // refreshed on next scrape
 	}
 	for _, m := range addedColumns {
 		var n int
@@ -173,6 +175,7 @@ type ActiveListing struct {
 	URL       string
 	FirstSeen time.Time
 	LastSeen  time.Time
+	ListedAt  time.Time // Tradera's startDate; zero on pre-migration rows
 	Notified  bool
 	Broken    bool
 	Category  int
@@ -182,14 +185,19 @@ type ActiveListing struct {
 // conflict (sellers adjust prices); first_seen and notified are preserved.
 func (s *Store) UpsertActive(l ActiveListing) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+	var listedAt any
+	if !l.ListedAt.IsZero() {
+		listedAt = l.ListedAt.UTC().Format(time.RFC3339)
+	}
 	_, err := s.db.Exec(`INSERT INTO active_listings
-		(id, model, storage_gb, price, title, url, first_seen, last_seen, category)
-		VALUES (?,?,?,?,?,?,?,?,?)
+		(id, model, storage_gb, price, title, url, first_seen, last_seen, category, listed_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			price = excluded.price,
 			title = excluded.title,
-			last_seen = excluded.last_seen`,
-		l.ID, l.Model, l.StorageGB, l.Price, l.Title, l.URL, now, now, l.Category)
+			last_seen = excluded.last_seen,
+			listed_at = COALESCE(excluded.listed_at, active_listings.listed_at)`,
+		l.ID, l.Model, l.StorageGB, l.Price, l.Title, l.URL, now, now, l.Category, listedAt)
 	return err
 }
 
@@ -275,7 +283,7 @@ func (s *Store) BlockedIDs() (map[int64]string, error) {
 // ListActive returns all active listings, newest first.
 func (s *Store) ListActive() ([]ActiveListing, error) {
 	rows, err := s.db.Query(`SELECT id, model, storage_gb, price, title, url,
-		first_seen, last_seen, notified, broken
+		first_seen, last_seen, listed_at, notified, broken
 		FROM active_listings ORDER BY first_seen DESC`)
 	if err != nil {
 		return nil, err
@@ -285,13 +293,17 @@ func (s *Store) ListActive() ([]ActiveListing, error) {
 	for rows.Next() {
 		var l ActiveListing
 		var first, last string
+		var listed sql.NullString
 		var notified, broken int
 		if err := rows.Scan(&l.ID, &l.Model, &l.StorageGB, &l.Price, &l.Title, &l.URL,
-			&first, &last, &notified, &broken); err != nil {
+			&first, &last, &listed, &notified, &broken); err != nil {
 			return nil, err
 		}
 		l.FirstSeen, _ = time.Parse(time.RFC3339, first)
 		l.LastSeen, _ = time.Parse(time.RFC3339, last)
+		if listed.Valid {
+			l.ListedAt, _ = time.Parse(time.RFC3339, listed.String)
+		}
 		l.Notified = notified != 0
 		l.Broken = broken != 0
 		out = append(out, l)

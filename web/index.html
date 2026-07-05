@@ -261,7 +261,7 @@ const HEADS = {
     <th class="num" data-sort="ref">Median kr <span class="arrow"></span></th>
     <th data-sort="gap">Prisgap <span class="arrow"></span></th>
     <th class="num col-samples" data-sort="samples">Sålda <span class="arrow"></span></th>
-    <th class="col-seen" data-sort="seen">Sedd <span class="arrow"></span></th>
+    <th class="col-seen" data-sort="listed">Datum <span class="arrow"></span></th>
     <th></th></tr>`,
   bargains: `<tr>
     <th>Annons</th>
@@ -273,13 +273,15 @@ const HEADS = {
     <th class="col-seen" data-sort="sold">Såld <span class="arrow"></span></th></tr>`,
 };
 
-function seenText(iso) {
-  const days = Math.floor((Date.now() - new Date(iso)) / 864e5);
-  if (days <= 0) return "idag";
-  if (days === 1) return "igår";
-  if (days < 7) return days + " d";
-  return new Date(iso).toLocaleDateString("sv-SE", { day: "numeric", month: "short" });
-}
+const dateText = (iso) => {
+  const d = new Date(iso);
+  const opts = { day: "numeric", month: "short" };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString("sv-SE", opts);
+};
+// Tradera's listing date when we have it; our first-seen as fallback for
+// rows scraped before listed_at was stored.
+const listedDate = (l) => l.listed_at ?? l.first_seen;
 
 function daysText(d) {
   if (d == null) return "—";
@@ -314,7 +316,7 @@ function activeRow(l) {
     <td class="num">${l.ref_price ? kr(l.ref_price) : "—"}</td>
     <td>${gapCell(l)}</td>
     <td class="num col-samples">${l.samples}</td>
-    <td class="col-seen mono">${seenText(l.first_seen)}</td>
+    <td class="col-seen mono">${dateText(listedDate(l))}</td>
     <td class="actions">
       <button class="flag" data-id="${l.id}" data-broken="${l.broken}">
         ${l.broken ? "Ångra" : "Trasig"}</button>
@@ -331,8 +333,7 @@ function bargainRow(l) {
     <td>${gapCell(l)}</td>
     <td class="num col-samples">${l.samples}</td>
     <td class="num">${daysText(l.days_listed)}</td>
-    <td class="col-seen mono">${new Date(l.sold_at)
-      .toLocaleDateString("sv-SE", { day: "numeric", month: "short" })}</td>
+    <td class="col-seen mono">${dateText(l.sold_at)}</td>
   </tr>`;
 }
 
@@ -341,7 +342,7 @@ const SORTVALS = {
   ref: (l) => l.ref_price || -1,
   gap: (l) => (l.ref_price ? l.pct_below : -Infinity),
   samples: (l) => l.samples,
-  seen: (l) => new Date(l.first_seen).getTime(),
+  listed: (l) => new Date(listedDate(l)).getTime(),
   sold: (l) => new Date(l.sold_at).getTime(),
   days: (l) => l.days_listed ?? -1,
 };
