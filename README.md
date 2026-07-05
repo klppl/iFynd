@@ -1,68 +1,70 @@
 # iFynd
 
-Finds underpriced iPhones and iPads on [Tradera](https://www.tradera.com) by
-comparing active fixed-price ("köp nu") listings against historical sold
-prices, per (model, storage) bucket.
+A little Go service that watches [Tradera](https://www.tradera.com) for
+underpriced iPhones and iPads. It keeps its own history of what every model
+actually sells for, then flags köp nu listings that sit well under that.
 
-**Aktiva annonser** — live listings vs their bucket median; hits highlighted,
-broken devices marked red and quarantined from the stats:
+The **Aktiva annonser** tab is the radar: everything for sale right now,
+compared against the median sold price for that exact model and storage.
+Deals show up green. If a deal turns out to be a cracked screen in disguise,
+one click marks it broken (red) and its price stays out of the statistics.
 
 ![Active listings](docs/active-listings.png)
 
-**Sålda fynd** — historical sales that went below the median, with how long
-each listing took to sell:
+**Sålda fynd** is hindsight: every sale in the last 90 days that went below
+the median, and how long the listing was up before someone grabbed it. The
+good ones tend to go within a day, which is the whole reason this runs on a
+timer instead of me refreshing the site.
 
 ![Sold bargains](docs/sold-bargains.png)
 
 ## How it works
 
-Tradera category pages are Next.js RSC pages that embed the complete search
-result as JSON in `self.__next_f.push()` script chunks — including structured
-attributes (`mobile_model`, `mobile_disk_memory`, `condition`) that are more
-reliable than the free-text titles. iFynd:
+Tradera's category pages are Next.js apps that ship the entire search result
+as JSON inside `self.__next_f.push()` script chunks, so there is no HTML
+parsing involved. The JSON also carries structured attributes (model,
+storage, condition) that are far more reliable than whatever the seller
+typed in the title.
 
-1. Scrapes sold listings (`itemStatus=Sold&sortBy=AddedOn`) for each
-   configured category into an append-only price history. A category with no
-   history backfills everything Tradera still serves (~90 days); later runs
-   only walk pages until listings are older than `IFYND_SOLD_WINDOW_DAYS`.
-2. Scrapes active fixed-price listings and upserts them (dedup on Tradera
-   listing id, `last_seen` refreshed each run).
-3. Classifies each listing into a (model, storage) bucket. iPhones use
-   Tradera's structured attributes first with title parsing as fallback;
-   iPads have no model attributes, so titles are normalized across
-   generation/chip/year/screen-size spellings ("3:e gen", "M1", "2021",
-   "12.9"). Accessories, bundles, broken/parts devices and ambiguous titles
-   are skipped and logged to `skipped_listings` for auditing.
-4. For each bucket with ≥ `IFYND_MIN_SAMPLES` sold records in the lookback
-   window, computes a reference price (median by default, or trimmed mean)
-   and flags active listings more than `IFYND_THRESHOLD_PCT` below it.
-5. Notifies once per listing (`notified` flag). The notifier is an interface;
-   `log` is the built-in stub — add ntfy/Discord in `internal/notify`.
+Each cycle (every 30 minutes by default):
+
+1. Scrape sold listings into an append-only price history. A category with
+   no history yet gets backfilled with everything Tradera still serves,
+   roughly 90 days. After that it only reads back `IFYND_SOLD_WINDOW_DAYS`.
+2. Scrape the active fixed-price listings, deduped on Tradera's listing id.
+3. Sort every listing into a (model, storage) bucket. iPhone listings
+   usually have usable attributes. iPad listings have none, so the title
+   parser has to know that "3:e gen", "M1" and "2021" can all mean the same
+   device. Anything it can't classify with confidence gets skipped and
+   logged to `skipped_listings`, because a wrong guess in the price history
+   is worse than a missing data point. That covers accessories, bundles,
+   parts phones, multi-device lots and titles that are just "iPad".
+4. Compute a median (or trimmed mean) per bucket and flag active listings
+   more than `IFYND_THRESHOLD_PCT` below it. Buckets with fewer than
+   `IFYND_MIN_SAMPLES` sales are ignored entirely.
+5. Notify once per listing, ever. The notifier is an interface with a log
+   stub behind `IFYND_NOTIFIER`; ntfy or Discord can be added in
+   `internal/notify`.
 
 ## Run
 
 ```sh
 go run . --once        # single scrape+compare cycle
 go run .               # loop every IFYND_INTERVAL (default 30m) + HTTP API
-docker compose up -d   # on the VPS; SQLite persisted in the ifynd-data volume
+docker compose up -d   # on the VPS; SQLite lives in the ifynd-data volume
 ```
 
 ## Web GUI
 
-`http://<host>:8080/` serves a single-page dashboard (embedded in the binary)
-with two tabs:
+`http://<host>:8080/` serves a single-page dashboard baked into the binary.
+Filters for family (iPhone/iPad), model, free text and hits-only. Each active
+row has two buttons:
 
-- **Aktiva annonser** — all active listings with price, bucket median, a
-  diverging price-gap bar, and sample count. Hits are highlighted; filters
-  for search/model/only-hits. Two actions per row:
-  - **Trasig** marks a broken device (red) — excluded from hits and
-    notifications, and its price never enters the sold history if it sells
-    (undo with **Ångra**).
-  - **Exkludera** deletes the listing and tombstones its id so no future
-    scrape re-adds it.
-- **Sålda fynd** — historical sales that went below the bucket reference by
-  at least the hit threshold, including how many days each was listed before
-  it sold (blank for records scraped before listing dates were stored).
+- **Trasig** marks a broken device. The row turns red, it can never be a
+  hit, and if the phone later sells its price is blocked from the history.
+  Ångra undoes it.
+- **Exkludera** deletes the listing and remembers the id, so the next
+  scrape can't quietly re-add it.
 
 ## HTTP API
 
@@ -71,7 +73,7 @@ with two tabs:
 - `GET /api/listings` — active listings with computed references and flags
 - `POST /api/listings/{id}/broken` — body `{"broken": true|false}`
 - `POST /api/listings/{id}/exclude` — delete + tombstone a listing
-- `GET /api/bargains` — historical below-reference sales with days-listed
+- `GET /api/bargains` — historical below-median sales with days-to-sell
 - `GET /api/hits` — hits from the most recent run
 - `GET /api/buckets` — sold-price buckets (count/min/max/mean)
 
