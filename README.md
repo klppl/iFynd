@@ -100,5 +100,5 @@ Varje aktiv rad har två knappar:
 
 ## Licens
 
-[Lagom-licensen](LICENSE) — inte för mycket frihet, inte för lite. Precis
+[The Lagom License](LICENSE) — inte för mycket frihet, inte för lite. Precis
 lagom.
