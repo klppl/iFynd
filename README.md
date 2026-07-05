@@ -97,3 +97,8 @@ Varje aktiv rad har två knappar:
 | `IFYND_NOTIFIER` | `log` | Notifieringskanal |
 | `IFYND_HTTP_ADDR` | `:8080` | Adress för API:t |
 | `IFYND_CATEGORIES` | `340186:iphone,342496:ipad` | Tradera-kategorier som `<id>:<familj>`-par |
+
+## Licens
+
+[Lagom-licensen](LICENSE) — inte för mycket frihet, inte för lite. Precis
+lagom.
