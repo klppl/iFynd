@@ -49,6 +49,9 @@ type Config struct {
 	RequestDelay time.Duration
 	UserAgent    string
 	Notifier     string
+
+	Public      bool   // GUI is reachable from the internet
+	WebPassword string // required when Public; unlocks broken/exclude
 }
 
 func loadConfig() (Config, error) {
@@ -98,6 +101,13 @@ func loadConfig() (Config, error) {
 	if cfg.Metric, err = analyze.ParseMetric(envStr("IFYND_METRIC", "median")); err != nil {
 		return cfg, err
 	}
+	if cfg.Public, err = envBool("IFYND_PUBLIC", false); err != nil {
+		return cfg, err
+	}
+	cfg.WebPassword = envStr("IFYND_WEB_PASSWORD", "")
+	if cfg.Public && cfg.WebPassword == "" {
+		return cfg, fmt.Errorf("IFYND_PUBLIC requires IFYND_WEB_PASSWORD to be set")
+	}
 	return cfg, nil
 }
 
@@ -142,6 +152,18 @@ func envInt(key string, def int) (int, error) {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return n, nil
+}
+
+func envBool(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", key, err)
+	}
+	return b, nil
 }
 
 func envFloat(key string, def float64) (float64, error) {

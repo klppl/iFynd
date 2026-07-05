@@ -186,7 +186,10 @@ button.flag {
   white-space: nowrap;
 }
 button.flag:hover { color: var(--ink); border-color: var(--muted); }
+button.flag:disabled { opacity: .45; cursor: default; }
+button.flag:disabled:hover { color: var(--muted); border-color: var(--line); }
 tr.broken button.flag { border-style: dashed; }
+#login { align-self: center; }
 
 .badge {
   display: inline-block; font: 600 10px var(--sans);
@@ -211,6 +214,7 @@ tr.broken button.flag { border-style: dashed; }
   <span class="wordmark">iFynd</span>
   <span class="tagline">prisradar · iPhone & iPad på Tradera</span>
   <div id="status">laddar status …</div>
+  <button id="login" class="flag" hidden>Logga in</button>
 </header>
 
 <nav class="tabs">
@@ -240,6 +244,10 @@ tr.broken button.flag { border-style: dashed; }
 "use strict";
 let listings = [];
 let bargains = [];
+// Set from /api/auth. When hosted publicly (IFYND_PUBLIC) the broken/
+// exclude buttons stay disabled until a password login.
+let auth = { public: false, authenticated: true };
+const locked = () => auth.public && !auth.authenticated;
 let view = "active";
 let famFilter = "";
 const famOf = (l) => l.model.toLowerCase().startsWith("ipad") ? "ipad" : "iphone";
@@ -307,6 +315,7 @@ function titleCell(l, extra) {
 }
 
 function activeRow(l) {
+  const dis = locked() ? ' disabled title="Logga in för att ändra"' : "";
   const sub =
     (l.is_hit && !l.broken ? ' <span class="badge">fynd</span>' : "") +
     (l.broken ? ' · <span class="broken-mark">trasig</span>' : "");
@@ -318,9 +327,9 @@ function activeRow(l) {
     <td class="num col-samples">${l.samples}</td>
     <td class="col-seen mono">${dateText(listedDate(l))}</td>
     <td class="actions">
-      <button class="flag" data-id="${l.id}" data-broken="${l.broken}">
+      <button class="flag" data-id="${l.id}" data-broken="${l.broken}"${dis}>
         ${l.broken ? "Ångra" : "Trasig"}</button>
-      <button class="flag excl" data-id="${l.id}">Exkludera</button>
+      <button class="flag excl" data-id="${l.id}"${dis}>Exkludera</button>
     </td>
   </tr>`;
 }
@@ -393,6 +402,7 @@ async function exclude(id) {
   const l = listings.find((x) => x.id === id);
   if (!confirm(`Ta bort "${l ? l.title : id}"?\nAnnonsen blockeras och kommer inte tillbaka vid nästa skrapning.`)) return;
   const res = await fetch(`/api/listings/${id}/exclude`, { method: "POST" });
+  if (res.status === 401) { alert("Inloggning krävs — klicka Logga in."); return; }
   if (!res.ok) { alert("Kunde inte ta bort: " + (await res.text())); return; }
   listings = listings.filter((x) => x.id !== id);
   render();
@@ -416,6 +426,7 @@ async function toggleBroken(id, broken) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ broken }),
   });
+  if (res.status === 401) { alert("Inloggning krävs — klicka Logga in."); return; }
   if (!res.ok) { alert("Kunde inte spara: " + (await res.text())); return; }
   const l = listings.find((x) => x.id === id);
   if (l) l.broken = broken;
@@ -423,13 +434,16 @@ async function toggleBroken(id, broken) {
 }
 
 async function load() {
-  const [st, ls, bg] = await Promise.all([
+  const [st, ls, bg, au] = await Promise.all([
     fetch("/api/status").then((r) => r.json()),
     fetch("/api/listings").then((r) => r.json()),
     fetch("/api/bargains").then((r) => r.json()),
+    fetch("/api/auth").then((r) => r.json()),
   ]);
   listings = ls || [];
   bargains = bg || [];
+  auth = au;
+  $("login").hidden = !locked();
 
   refreshModelOptions();
 
@@ -440,6 +454,20 @@ async function load() {
     (st.last_run_error ? `<br>fel: ${esc(st.last_run_error)}` : "");
   render();
 }
+
+$("login").addEventListener("click", async () => {
+  const pw = prompt("Lösenord:");
+  if (!pw) return;
+  const res = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: pw }),
+  });
+  if (!res.ok) { alert("Fel lösenord."); return; }
+  auth.authenticated = true;
+  $("login").hidden = true;
+  render();
+});
 
 document.querySelector("tbody").addEventListener("click", (e) => {
   const btn = e.target.closest("button.flag");

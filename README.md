@@ -68,6 +68,10 @@ för familj, modell och fritext. Varje annons har två knappar: **Trasig**
 litet JSON-API — `/api/listings`, `/api/bargains`, `/api/hits`,
 `/api/buckets`, `/api/status` — plus `/healthz`.
 
+Är sidan nåbar från internet, sätt `IFYND_PUBLIC=true` och ett
+`IFYND_WEB_PASSWORD`. Då är läsning fortfarande öppen, men knapparna
+kräver inloggning (knappen **Logga in** uppe till höger).
+
 ## Konfiguration
 
 Allt styrs med miljövariabler. De viktigaste:
@@ -79,6 +83,8 @@ Allt styrs med miljövariabler. De viktigaste:
 | `IFYND_MIN_SAMPLES` | `5` | Minsta antal sålda innan en bucket litas på |
 | `IFYND_NOTIFIER` | `log` | Notifieringskanal |
 | `IFYND_DB_PATH` | `ifynd.db` | SQLite-databasen (`/data/ifynd.db` i Docker) |
+| `IFYND_PUBLIC` | `false` | Sätt till `true` när GUI:t är nåbart från internet |
+| `IFYND_WEB_PASSWORD` | — | Krävs när `IFYND_PUBLIC` är på; låser upp Trasig/Exkludera |
 
 Resten — sidtak, skrapfönster, kategorier med mera — har vettiga
 standardvärden och finns i `loadConfig()` i `main.go`.
