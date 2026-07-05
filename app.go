@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -114,6 +115,7 @@ func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]stri
 	}
 
 	q := tradera.SoldQuery(cat.ID)
+	maps.Copy(q.Params, cat.Filter)
 	total := 0
 	for page := 1; page <= maxPages; page++ {
 		if page > 1 {
@@ -187,6 +189,7 @@ type activeItem struct {
 // considers listings that have already ended.
 func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]string, cat Category) ([]activeItem, error) {
 	q := tradera.ActiveQuery(cat.ID)
+	maps.Copy(q.Params, cat.Filter)
 	var out []activeItem
 	total := 0
 	for page := 1; page <= a.cfg.ActiveMaxPages; page++ {

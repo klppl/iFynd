@@ -1,9 +1,9 @@
 # iFynd
 
 En liten Go-tjänst som bevakar [Tradera](https://www.tradera.com) efter
-felprisade iPhones och iPads. Den bygger sin egen historik över vad varje
-modell faktiskt säljs för, och flaggar köp nu-annonser som ligger rejält
-under det.
+felprisade iPhones, iPads och MacBooks. Den bygger sin egen historik över
+vad varje modell faktiskt säljs för, och flaggar köp nu-annonser som ligger
+rejält under det.
 
 Fliken **Aktiva annonser** är radarn: allt som är till salu just nu, jämfört
 med medianen av sålda exemplar med exakt samma modell och lagring. Fynd blir

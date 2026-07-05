@@ -212,7 +212,7 @@ tr.broken button.flag { border-style: dashed; }
 
 <header>
   <span class="wordmark">iFynd</span>
-  <span class="tagline">prisradar · iPhone & iPad på Tradera</span>
+  <span class="tagline">prisradar · iPhone, iPad & MacBook på Tradera</span>
   <div id="status">laddar status …</div>
   <button id="login" class="flag" hidden>Logga in</button>
 </header>
@@ -228,6 +228,7 @@ tr.broken button.flag { border-style: dashed; }
     <button data-fam="" class="active">Alla</button>
     <button data-fam="iphone">iPhone</button>
     <button data-fam="ipad">iPad</button>
+    <button data-fam="macbook">MacBook</button>
   </div>
   <select id="model"><option value="">Alla modeller</option></select>
   <label class="check" id="onlyHitsWrap"><input type="checkbox" id="onlyHits"> Endast fynd</label>
@@ -250,7 +251,10 @@ let auth = { public: false, authenticated: true };
 const locked = () => auth.public && !auth.authenticated;
 let view = "active";
 let famFilter = "";
-const famOf = (l) => l.model.toLowerCase().startsWith("ipad") ? "ipad" : "iphone";
+const famOf = (l) => {
+  const m = l.model.toLowerCase();
+  return m.startsWith("ipad") ? "ipad" : m.startsWith("macbook") ? "macbook" : "iphone";
+};
 const sortState = {
   active: { key: "gap", dir: -1 },
   bargains: { key: "sold", dir: -1 },

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Go service that finds underpriced iPhones on Tradera by comparing active
-fixed-price ("köp nu") listings against historical sold prices per
-(model, storage) bucket. Runs on a VPS via docker-compose. No CGO
+Go service that finds underpriced iPhones, iPads and MacBooks on Tradera by
+comparing active fixed-price ("köp nu") listings against historical sold
+prices per (model, storage) bucket. Runs on a VPS via docker-compose. No CGO
 (modernc.org/sqlite).
 
 ## Commands
@@ -41,16 +41,24 @@ router (server.go); each `internal/` package is one stage.
   `testdata/sold_page.html` is a real capture — if Tradera changes their
   frontend, re-capture it and fix the parser against it.
 - **internal/classify** — (model, storage) bucketing, per family
-  (`IPhone`/`IPad`, selected by the category config). iPhones prefer
-  Tradera's structured attributes (`mobile_model`, `mobile_disk_memory`,
-  `condition`) with title regexes as fallback. The iPad category exposes NO
-  model/storage attributes, so ipad.go normalizes titles across generation
-  ("3:e gen"/"7th"/"sjunde generationen"), chip (M1–M4, A16, A17 Pro),
-  release year, and Pro/Air screen size into one canonical bucket — and
-  skips anything underdetermined (e.g. "iPad Pro 12.9" alone spans six
-  generations). Rejects accessories/bundles/broken/ambiguous listings with
-  a reason; those land in the `skipped_listings` table for auditing. Raw
-  titles are stored everywhere so misclassifications can be audited later.
+  (`IPhone`/`IPad`/`MacBook`, selected by the category config). iPhones
+  prefer Tradera's structured attributes (`mobile_model`,
+  `mobile_disk_memory`, `condition`) with title regexes as fallback. The
+  iPad category exposes NO model/storage attributes, so ipad.go normalizes
+  titles across generation ("3:e gen"/"7th"/"sjunde generationen"), chip
+  (M1–M4, A16, A17 Pro), release year, and Pro/Air screen size into one
+  canonical bucket — and skips anything underdetermined (e.g. "iPad Pro
+  12.9" alone spans six generations). The laptop category (302393) is
+  multi-brand — the macbook family adds `af-computer_brand=Apple` to the
+  query via `Category.Filter` — and likewise has no usable attributes, so
+  macbook.go buckets Apple Silicon machines as line+screen+chip
+  ("MacBook Pro 14 M3 Pro") and Intel-era ones as line+screen+year,
+  telling RAM apart from SSD in titles that name both ("16GB/512GB").
+  Junk words are family-tuned: "med laddare" is an accessory signal for
+  phones but a routine included extra for laptops. Rejects
+  accessories/bundles/broken/ambiguous listings with a reason; those land
+  in the `skipped_listings` table for auditing. Raw titles are stored
+  everywhere so misclassifications can be audited later.
 - **internal/store** — SQLite. `sold_listings` is append-only history
   (INSERT OR IGNORE on Tradera id); `active_listings` is upserted with
   `last_seen` refreshed, preserving `first_seen`/`notified`/`broken`.

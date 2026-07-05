@@ -9,6 +9,7 @@ package classify
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,16 +20,17 @@ import (
 type Family string
 
 const (
-	IPhone Family = "iphone"
-	IPad   Family = "ipad"
+	IPhone  Family = "iphone"
+	IPad    Family = "ipad"
+	MacBook Family = "macbook"
 )
 
 func ParseFamily(s string) (Family, error) {
 	switch Family(s) {
-	case IPhone, IPad:
+	case IPhone, IPad, MacBook:
 		return Family(s), nil
 	}
-	return "", fmt.Errorf("unknown family %q (want iphone or ipad)", s)
+	return "", fmt.Errorf("unknown family %q (want iphone, ipad or macbook)", s)
 }
 
 // Result is a confident classification.
@@ -37,11 +39,11 @@ type Result struct {
 	StorageGB int    // 1 TB = 1024
 }
 
-// junkWords reject listings that are not a plain working phone. Matched
-// against the lowercased title as substrings, so keep entries specific
-// (e.g. "batteri till", not "batteri" — titles legitimately brag about
-// "100% batterihälsa").
-var junkWords = []string{
+// brokenWords reject listings that are not a plain working device, in any
+// family. Matched against the lowercased title as substrings, so keep
+// entries specific (e.g. "batteri till", not "batteri" — titles
+// legitimately brag about "100% batterihälsa").
+var brokenWords = []string{
 	// broken / for parts
 	"defekt", "trasig", "reservdel", "för delar", "till delar", "sprucken",
 	"spräckt", "krossad", "skadad", "fungerar ej", "fungerar inte",
@@ -49,16 +51,35 @@ var junkWords = []string{
 	"cracked", "broken", "faulty", "for parts", "spare part",
 	// locked
 	"icloud", "operatörslåst", "simlåst", "sim-låst", "låst till",
-	// accessories / empty boxes / bundles / multi-lots
+	// lookalikes ("ser ut som en iPhone 17") sold under the pricier model
+	"ser ut som", "liknar", "ser ut att vara",
+	// not a device at all
+	"extra frakt", "fraktkostnad", "ordernr", "box till", "låda till",
+}
+
+// accessoryWords reject accessory/empty-box/bundle listings in the phone
+// and tablet categories.
+var accessoryWords = []string{
 	"skal", "fodral", "case", "hörlur", "airpod", "laddare", "kabel",
 	"adapter", "skärmskydd", "pansarglas", "endast kartong", "tom kartong",
 	"bara kartong", "kartong till", "box only", "empty box", "skärm till",
 	"display till", "batteri till", "moderkort", "attrapp", "dummy",
 	"kopia", "replika", "watch", "paket", "stycken", " pack",
-	// lookalikes ("ser ut som en iPhone 17") sold under the pricier model
-	"ser ut som", "liknar", "ser ut att vara",
-	// not a device at all
-	"extra frakt", "fraktkostnad", "ordernr", "box till", "låda till",
+}
+
+// macAccessoryWords is the laptop-tuned counterpart. Laptop titles
+// routinely mention included extras ("med laddare och kabel"), so the
+// accessory words need a "till" suffix to mean the accessory is the item.
+var macAccessoryWords = []string{
+	"skal till", "fodral till", "case till", "laddare till", "batteri till",
+	"skärm till", "display till", "tangentbord till", "moderkort",
+	"attrapp", "dummy", "kopia", "replika", "superdrive", "docka",
+	"dockning", "endast kartong", "tom kartong", "bara kartong",
+	"kartong till", "box only", "empty box", "watch", "paket", "stycken",
+	" pack",
+	// other Apple machines filed in the laptop category
+	"imac", "mac mini", "macmini", "mac studio", "ibook", "powerbook",
+	"iphone", "ipad", "airpod", "hörlur",
 }
 
 // ipadFamilyPrefix maps the tablet_brand facet to the canonical model prefix
@@ -71,15 +92,18 @@ var ipadFamilyPrefix = map[string]string{
 	"ipad mini": "iPad mini",
 }
 
-// multiLotRe catches "3 iPad gen 5", "2 st iPhone" — lots sold as one
+// multiLotRe catches "3 iPad gen 5", "2 st MacBook" — lots sold as one
 // listing, whose single price would poison a per-device bucket. Single digit
-// only, so years ("2021 iPad Pro") never match.
-var multiLotRe = regexp.MustCompile(`(?i)\b\d\s*(?:st\.?\s+)?(?:ipad|iphone)`)
+// only, so years ("2021 iPad Pro") never match, and "M1 MacBook" is safe
+// (no word boundary inside "M1").
+var multiLotRe = regexp.MustCompile(`(?i)\b\d\s*(?:st\.?\s+)?(?:ipad|iphone|macbook)`)
 
-// junkByFamily rejects the other family's devices and bundles.
+// junkByFamily is the full reject list per family: shared broken/locked
+// words plus family-tuned accessory words and the other families' devices.
 var junkByFamily = map[Family][]string{
-	IPhone: {"ipad", "surfplatta"},
-	IPad:   {"iphone", "tangentbord till", "penna till", "pencil till"},
+	IPhone:  slices.Concat(brokenWords, accessoryWords, []string{"ipad", "surfplatta"}),
+	IPad:    slices.Concat(brokenWords, accessoryWords, []string{"iphone", "tangentbord till", "penna till", "pencil till"}),
+	MacBook: slices.Concat(brokenWords, macAccessoryWords),
 }
 
 // junkPrefixes catch titles that OPEN with a non-phone word where the word
@@ -105,7 +129,7 @@ var seYearRe = regexp.MustCompile(`(?i)\bse\b.{0,20}?\b(2016|2020|2022)\b`)
 func Item(it *tradera.Item, fam Family) (res Result, ok bool, reason string) {
 	title := strings.ToLower(it.ShortDescription)
 
-	for _, w := range append(junkWords, junkByFamily[fam]...) {
+	for _, w := range junkByFamily[fam] {
 		if strings.Contains(title, w) {
 			return res, false, "junk word: " + w
 		}
@@ -125,6 +149,24 @@ func Item(it *tradera.Item, fam Family) (res Result, ok bool, reason string) {
 			}
 		}
 	}
+	if fam == MacBook {
+		// The laptop category has no model/storage/year attributes and the
+		// RAM facet is unreliable, so the title is the only source; the
+		// processor facet ("Apple"/"Intel") serves as a cross-check.
+		model := macModelFromTitle(it.ShortDescription, strings.ToLower(it.Attr("computer_processor_model")))
+		if model == "" {
+			return res, false, "no confident model"
+		}
+		gb, conflict := macStorageFromTitle(title)
+		if conflict {
+			return res, false, "ambiguous storage in title"
+		}
+		if gb == 0 {
+			return res, false, "no storage size"
+		}
+		return Result{Model: model, StorageGB: gb}, true, ""
+	}
+
 	if brand := it.Attr("mobile_brand"); brand != "" && !strings.EqualFold(brand, "apple") {
 		return res, false, "brand: " + brand
 	}
