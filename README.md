@@ -51,8 +51,41 @@ Varje körning (var 30:e minut som standard):
 ```sh
 go run . --once        # en skrapning+jämförelse, sedan klart
 go run .               # loopar var IFYND_INTERVAL (30 min) + HTTP-API
-docker compose up -d   # på VPS:en; SQLite ligger i volymen ifynd-data
 ```
+
+## Docker
+
+En färdig image publiceras till `ghcr.io/klppl/ifynd`. Den byggs av
+GitHub Actions-workflowet **Build and push Docker image**, som körs
+manuellt från Actions-fliken (eller `gh workflow run docker.yml`) och
+taggar både `latest` och commit-hashen om man vill pinna en version.
+
+På VPS:en pekar man `docker-compose.yml` på imagen istället för att
+bygga lokalt:
+
+```yaml
+services:
+  ifynd:
+    image: ghcr.io/klppl/ifynd:latest
+    # ...resten som vanligt
+```
+
+Sedan är det bara att hämta och starta om vid varje ny build:
+
+```sh
+docker compose pull && docker compose up -d
+```
+
+Är paketet privat på GHCR behövs en inloggning först, med en personal
+access token som har `read:packages`:
+
+```sh
+docker login ghcr.io -u klppl
+```
+
+Att bygga direkt på maskinen funkar förstås fortfarande:
+`docker compose up -d --build`. Oavsett variant ligger SQLite-databasen
+kvar i volymen `ifynd-data`.
 
 ## Webbgränssnitt
 
