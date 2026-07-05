@@ -21,115 +21,67 @@ timer istället för att jag sitter och uppdaterar sidan.
 
 ## Så funkar det
 
-Traderas kategorisidor är Next.js-appar som skickar med hela sökresultatet
-som JSON i `self.__next_f.push()`-scriptblock, så ingen HTML-parsning behövs.
-JSON:en innehåller dessutom strukturerade attribut (modell, lagring, skick)
-som är betydligt mer pålitliga än vad säljaren råkade skriva i titeln.
-
-Varje körning (var 30:e minut som standard):
-
-1. Skrapar sålda annonser till en prishistorik som bara växer. En kategori
-   utan historik backfylls med allt Tradera fortfarande visar, ungefär 90
-   dagar. Därefter läses bara `IFYND_SOLD_WINDOW_DAYS` dagar bakåt.
-2. Skrapar aktiva köp nu-annonser, deduplicerade på Traderas annons-id.
-3. Sorterar varje annons i en bucket per (modell, lagring). iPhone-annonser
-   har oftast användbara attribut. iPad-annonser har inga alls, så
-   titelparsern måste förstå att "3:e gen", "M1" och "2021" kan betyda samma
-   enhet. Allt som inte kan klassificeras med säkerhet hoppas över och
-   loggas i `skipped_listings`, för en felgissning i prishistoriken är värre
-   än en saknad datapunkt. Det gäller tillbehör, paket, reservdelsobjekt,
-   flerpack och titlar som bara säger "iPad".
-4. Räknar ut median (eller trimmat medelvärde) per bucket och flaggar aktiva
-   annonser som ligger mer än `IFYND_THRESHOLD_PCT` procent under. Buckets
-   med färre än `IFYND_MIN_SAMPLES` försäljningar ignoreras helt.
-5. Notifierar en gång per annons, aldrig mer. Notifieraren är ett interface
-   med en loggstubbe bakom `IFYND_NOTIFIER`; ntfy eller Discord kan läggas
-   till i `internal/notify`.
+Var 30:e minut skrapas Traderas sålda och aktiva annonser. Varje annons
+sorteras i en bucket per modell och lagring, och aktiva köp nu-annonser
+jämförs med medianpriset för sålda i samma bucket. Ligger priset tillräckligt
+långt under flaggas det som fynd och notifieras, en gång per annons. Allt som
+inte kan klassificeras med säkerhet — tillbehör, paket, reservdelsobjekt,
+titlar som bara säger "iPad" — hoppas över, för en felgissning i
+prishistoriken är värre än en saknad datapunkt.
 
 ## Kör
 
 ```sh
-go run . --once        # en skrapning+jämförelse, sedan klart
-go run .               # loopar var IFYND_INTERVAL (30 min) + HTTP-API
+go run . --once   # en skrapning+jämförelse, sedan klart
+go run .          # loop + webbgränssnitt på :8080
 ```
 
 ## Docker
 
-En färdig image publiceras till `ghcr.io/klppl/ifynd`. Den byggs av
-GitHub Actions-workflowet **Build and push Docker image**, som körs
-manuellt från Actions-fliken (eller `gh workflow run docker.yml`) och
-taggar både `latest` och commit-hashen om man vill pinna en version.
-
-På VPS:en pekar man `docker-compose.yml` på imagen istället för att
-bygga lokalt:
+En färdig image finns på `ghcr.io/klppl/ifynd:latest`, byggd av GitHub
+Actions-workflowet i repot (körs manuellt från Actions-fliken).
 
 ```yaml
 services:
   ifynd:
     image: ghcr.io/klppl/ifynd:latest
-    # ...resten som vanligt
-```
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ifynd-data:/data
 
-Sedan är det bara att hämta och starta om vid varje ny build:
+volumes:
+  ifynd-data:
+```
 
 ```sh
 docker compose pull && docker compose up -d
 ```
 
-Är paketet privat på GHCR behövs en inloggning först, med en personal
-access token som har `read:packages`:
+## Webbgränssnitt och API
 
-```sh
-docker login ghcr.io -u klppl
-```
+`http://<host>:8080/` visar aktiva annonser och historiska fynd, med filter
+för familj, modell och fritext. Varje annons har två knappar: **Trasig**
+(röd, kan aldrig bli fynd, priset hålls utanför statistiken) och
+**Exkludera** (tas bort och kommer inte tillbaka). Bakom sidan ligger ett
+litet JSON-API — `/api/listings`, `/api/bargains`, `/api/hits`,
+`/api/buckets`, `/api/status` — plus `/healthz`.
 
-Att bygga direkt på maskinen funkar förstås fortfarande:
-`docker compose up -d --build`. Oavsett variant ligger SQLite-databasen
-kvar i volymen `ifynd-data`.
+## Konfiguration
 
-## Webbgränssnitt
-
-`http://<host>:8080/` serverar en dashboard i en enda sida, inbakad i
-binären. Filter för familj (iPhone/iPad), modell, fritext och endast fynd.
-Varje aktiv rad har två knappar:
-
-- **Trasig** markerar en trasig enhet. Raden blir röd, den kan aldrig bli
-  ett fynd, och om enheten senare säljs blockeras priset från historiken.
-  Ångra ångrar.
-- **Exkludera** tar bort annonsen och kommer ihåg id:t, så att nästa
-  skrapning inte smyger tillbaka den.
-
-## HTTP-API
-
-- `GET /healthz`
-- `GET /api/status` — statistik från senaste körningen
-- `GET /api/listings` — aktiva annonser med referenspriser och flaggor
-- `POST /api/listings/{id}/broken` — body `{"broken": true|false}`
-- `POST /api/listings/{id}/exclude` — ta bort + blockera en annons
-- `GET /api/bargains` — historiska fynd med säljtid
-- `GET /api/hits` — träffar från senaste körningen
-- `GET /api/buckets` — prishistorikens buckets (antal/min/max/medel)
-
-## Konfiguration (env)
+Allt styrs med miljövariabler. De viktigaste:
 
 | Variabel | Standard | Betydelse |
 |---|---|---|
-| `IFYND_DB_PATH` | `ifynd.db` | Sökväg till SQLite (`/data/ifynd.db` i Docker) |
-| `IFYND_INTERVAL` | `30m` | Skrapintervall |
-| `IFYND_THRESHOLD_PCT` | `15` | Minsta % under referenspriset för att räknas som fynd |
+| `IFYND_INTERVAL` | `30m` | Hur ofta Tradera skrapas |
+| `IFYND_THRESHOLD_PCT` | `15` | Minsta % under medianen för att räknas som fynd |
 | `IFYND_MIN_SAMPLES` | `5` | Minsta antal sålda innan en bucket litas på |
-| `IFYND_MIN_PRICE` | `100` | Hoppa över annonser billigare än så här (skräp/bluff) |
-| `IFYND_METRIC` | `median` | `median` eller `trimmed_mean` |
-| `IFYND_TRIM_PCT` | `10` | Trimning per svans för `trimmed_mean` |
-| `IFYND_LOOKBACK_DAYS` | `90` | Historikfönster för referenspriser |
-| `IFYND_SOLD_WINDOW_DAYS` | `14` | Hur långt bakåt inkrementell skrapning läser |
-| `IFYND_SOLD_MAX_PAGES` | `20` | Sidtak per inkrementell skrapning av sålda |
-| `IFYND_BACKFILL_PAGES` | `100` | Sidtak för första körningens backfyllning |
-| `IFYND_ACTIVE_MAX_PAGES` | `25` | Sidtak för aktiva annonser |
-| `IFYND_REQUEST_DELAY` | `1500ms` | Paus mellan sidhämtningar (+ jitter) |
 | `IFYND_NOTIFIER` | `log` | Notifieringskanal |
-| `IFYND_HTTP_ADDR` | `:8080` | Adress för API:t |
-| `IFYND_CATEGORIES` | `340186:iphone,342496:ipad` | Tradera-kategorier som `<id>:<familj>`-par |
+| `IFYND_DB_PATH` | `ifynd.db` | SQLite-databasen (`/data/ifynd.db` i Docker) |
+
+Resten — sidtak, skrapfönster, kategorier med mera — har vettiga
+standardvärden och finns i `loadConfig()` i `main.go`.
 
 ## Licens
 

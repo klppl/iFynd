@@ -24,7 +24,7 @@ For a fast live test without a full backfill:
 `IFYND_DB_PATH=/tmp/t.db IFYND_BACKFILL_PAGES=3 go run . --once`
 
 All config is `IFYND_*` env vars with defaults in `loadConfig()` (main.go);
-the README documents them.
+the README documents the most important ones.
 
 ## Architecture
 
