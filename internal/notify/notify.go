@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -56,6 +57,11 @@ var httpClient = &http.Client{Timeout: 10 * time.Second}
 // Build constructs a channel from its stored kind/url/token. The "log" kind is
 // accepted so tests and defaults have a no-network target.
 func Build(kind, url, token string) (Notifier, error) {
+	url = strings.TrimSpace(url)
+	// Trim the token and drop an accidentally-pasted scheme prefix, so a
+	// value copied as "Bearer tk_…" or "tk_… " still authenticates.
+	token = strings.TrimSpace(token)
+	token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
 	switch kind {
 	case "", "log":
 		return LogNotifier{}, nil

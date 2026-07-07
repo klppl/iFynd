@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,7 +76,20 @@ type ntfy struct {
 }
 
 func (n *ntfy) Notify(ctx context.Context, h Hit) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.topicURL, strings.NewReader(h.Message()))
+	url := n.topicURL
+	// Authenticate two ways at once: the Authorization header, and ntfy's
+	// ?auth= query param (base64 raw-url of the header value). The query param
+	// survives a CDN/proxy that strips or intercepts Authorization, so the
+	// public URL keeps working through Cloudflare.
+	if n.token != "" {
+		auth := base64.RawURLEncoding.EncodeToString([]byte("Bearer " + n.token))
+		sep := "?"
+		if strings.Contains(url, "?") {
+			sep = "&"
+		}
+		url += sep + "auth=" + auth
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(h.Message()))
 	if err != nil {
 		return err
 	}

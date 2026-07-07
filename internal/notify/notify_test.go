@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +75,36 @@ func TestChannelsPost(t *testing.T) {
 			t.Errorf("gotify token = %q", req.URL.Query().Get("token"))
 		}
 	})
+}
+
+func TestNtfyAuthHeaderAndQueryParam(t *testing.T) {
+	var auth, query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		query = r.URL.Query().Get("auth")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// A pasted "Bearer "-prefixed, space-padded token must still normalize.
+	n, err := Build("ntfy", srv.URL+"/topic", "  Bearer tk_secret ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Notify(context.Background(), Hit{Model: "iPhone"}); err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer tk_secret" {
+		t.Errorf("Authorization = %q, want %q", auth, "Bearer tk_secret")
+	}
+	// ntfy decodes ?auth with raw-url base64; it must round-trip to the header.
+	dec, err := base64.RawURLEncoding.DecodeString(query)
+	if err != nil {
+		t.Fatalf("auth param not raw-url base64: %v", err)
+	}
+	if string(dec) != "Bearer tk_secret" {
+		t.Errorf("?auth decodes to %q, want %q", dec, "Bearer tk_secret")
+	}
 }
 
 func TestChannelPropagatesHTTPError(t *testing.T) {
