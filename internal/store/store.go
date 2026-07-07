@@ -4,6 +4,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -324,6 +325,34 @@ func (s *Store) PruneActive(olderThan time.Time) (int64, error) {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// PruneCategories deletes sold and active listings whose category is not in
+// keep — used to purge a retired family (e.g. iPad/MacBook) from an existing
+// DB after it's dropped from IFYND_CATEGORIES. skipped_listings is audit-only
+// and has no category column, so it's left untouched.
+func (s *Store) PruneCategories(keep []int) (sold, active int64, err error) {
+	if len(keep) == 0 {
+		return 0, 0, fmt.Errorf("refusing to prune: no categories to keep")
+	}
+	ph := make([]string, len(keep))
+	args := make([]any, len(keep))
+	for i, id := range keep {
+		ph[i] = "?"
+		args[i] = id
+	}
+	in := "(" + strings.Join(ph, ",") + ")"
+	for _, t := range []struct {
+		table string
+		out   *int64
+	}{{"sold_listings", &sold}, {"active_listings", &active}} {
+		res, err := s.db.Exec(`DELETE FROM `+t.table+` WHERE category NOT IN `+in, args...)
+		if err != nil {
+			return sold, active, fmt.Errorf("prune %s: %w", t.table, err)
+		}
+		*t.out, _ = res.RowsAffected()
+	}
+	return sold, active, nil
 }
 
 // RecordSkipped logs an unclassifiable listing for later audit.

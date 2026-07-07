@@ -61,7 +61,10 @@ docker compose pull && docker compose up -d
 ## Webbgränssnitt och API
 
 `http://<host>:8080/` visar aktiva annonser och historiska fynd, med filter
-för modell och fritext. Varje annons har två knappar: **Trasig**
+för modell och fritext. Filtren speglas i URL:en så att en filtrerad vy går
+att bokmärka eller dela — `/?model=iPhone+16`, `/?view=bargains`,
+`/?q=pro+max&hits=1` (modellen matchas tolerant, så `/?model=iphone16`
+funkar också). Varje annons har två knappar: **Trasig**
 (röd, kan aldrig bli fynd, priset hålls utanför statistiken) och
 **Exkludera** (tas bort och kommer inte tillbaka). Bakom sidan ligger ett
 litet JSON-API — `/api/listings`, `/api/bargains`, `/api/hits`,
@@ -87,6 +90,18 @@ Allt styrs med miljövariabler. De viktigaste:
 
 Resten — sidtak, skrapfönster, kategorier med mera — har vettiga
 standardvärden och finns i `loadConfig()` i `main.go`.
+
+## Underhåll
+
+Om en kategori tas bort ur `IFYND_CATEGORIES` (t.ex. iPad/MacBook) ligger
+dess gamla annonser kvar i databasen. Rensa dem med en engångskörning som
+tar bort allt som inte längre är konfigurerat:
+
+```sh
+go run . --prune-retired
+# i Docker:
+docker compose exec ifynd /ifynd --prune-retired
+```
 
 ## Licens
 

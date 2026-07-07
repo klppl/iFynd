@@ -224,6 +224,7 @@ let bargains = [];
 let auth = { public: false, authenticated: true };
 const locked = () => auth.public && !auth.authenticated;
 let view = "active";
+let urlApplied = false; // apply ?model=…&q=… once, not on every 2-min reload
 const sortState = {
   active: { key: "gap", dir: -1 },
   bargains: { key: "sold", dir: -1 },
@@ -368,6 +369,42 @@ function render() {
     th.querySelector(".arrow").textContent =
       th.dataset.sort === key ? (dir < 0 ? "▼" : "▲") : "";
   });
+
+  writeURL();
+}
+
+// Mirror the active filters into the URL so a filtered view is shareable and
+// bookmarkable (e.g. /?model=iPhone+16). Sort and transient UI stay out.
+function writeURL() {
+  const p = new URLSearchParams();
+  const q = $("q").value.trim();
+  if (q) p.set("q", q);
+  if ($("model").value) p.set("model", $("model").value);
+  if (view !== "active") p.set("view", view);
+  if ($("onlyHits").checked) p.set("hits", "1");
+  const qs = p.toString();
+  history.replaceState(null, "", qs ? "?" + qs : location.pathname);
+}
+
+// Authoritatively set the filters from the URL. Model is matched loosely
+// (case- and space-insensitive) so /?model=iphone16 selects "iPhone 16".
+// Runs on first load and on back/forward; call it after the model <option>s
+// have been populated.
+function applyURL() {
+  const p = new URLSearchParams(location.search);
+  const norm = (s) => s.toLowerCase().replace(/\s+/g, "");
+  view = p.get("view") === "bargains" ? "bargains" : "active";
+  document.querySelectorAll(".tabs button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === view));
+  $("q").value = p.get("q") || "";
+  $("onlyHits").checked = p.get("hits") === "1";
+  $("model").value = "";
+  const want = p.get("model") ? norm(p.get("model")) : "";
+  if (want) {
+    for (const opt of $("model").options) {
+      if (opt.value && norm(opt.value) === want) { $("model").value = opt.value; break; }
+    }
+  }
 }
 
 async function exclude(id) {
@@ -416,6 +453,7 @@ async function load() {
   $("login").hidden = !locked();
 
   refreshModelOptions();
+  if (!urlApplied) { applyURL(); urlApplied = true; }
 
   const t = st.last_run_start ? new Date(st.last_run_start) : null;
   $("status").innerHTML =
@@ -462,6 +500,8 @@ document.querySelectorAll(".tabs button").forEach((btn) =>
   }));
 for (const id of ["q", "model", "onlyHits"])
   $(id).addEventListener("input", render);
+// Back/forward through bookmarked filter states.
+addEventListener("popstate", () => { applyURL(); render(); });
 
 load().catch((err) => { $("status").textContent = "kunde inte ladda: " + err; });
 setInterval(() => load().catch(() => {}), 120000);

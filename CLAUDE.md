@@ -19,6 +19,7 @@ go test ./...                    # all tests
 go test ./internal/classify -run TestClassifyRejects -v   # single test
 go run . --once                  # one real scrape+compare cycle (hits Tradera)
 go run .                         # loop + GUI/API on :8080
+go run . --prune-retired         # delete rows whose category left IFYND_CATEGORIES, exit
 docker compose up -d --build     # production
 ```
 

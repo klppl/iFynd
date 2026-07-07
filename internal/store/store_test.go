@@ -103,3 +103,50 @@ func TestInsertSoldFillsListedAt(t *testing.T) {
 		t.Error("listed_at not backfilled on re-insert")
 	}
 }
+
+func TestPruneCategories(t *testing.T) {
+	s := testStore(t)
+	now := time.Now()
+	// Two families in the DB: iPhone (340186) and a retired iPad (342496).
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.InsertSold(SoldListing{ID: 1, Model: "iPhone 13", StorageGB: 128, Price: 2500, Title: "iPhone 13", SoldAt: now, URL: "u1", Category: 340186}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertSold(SoldListing{ID: 2, Model: "iPad Air", StorageGB: 64, Price: 3000, Title: "iPad Air", SoldAt: now, URL: "u2", Category: 342496}); err != nil {
+		t.Fatal(err)
+	}
+	must(s.UpsertActive(ActiveListing{ID: 1, Model: "iPhone 13", StorageGB: 128, Price: 2500, Title: "iPhone 13", URL: "u1", Category: 340186}))
+	must(s.UpsertActive(ActiveListing{ID: 2, Model: "iPad Air", StorageGB: 64, Price: 3000, Title: "iPad Air", URL: "u2", Category: 342496}))
+
+	// Guard: an empty keep list must never wipe the table.
+	if _, _, err := s.PruneCategories(nil); err == nil {
+		t.Fatal("PruneCategories(nil) should error, not delete everything")
+	}
+
+	sold, active, err := s.PruneCategories([]int{340186})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sold != 1 || active != 1 {
+		t.Fatalf("deleted sold=%d active=%d, want 1 and 1", sold, active)
+	}
+	rows, err := s.ListSold(now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != 1 {
+		t.Fatalf("sold after prune = %+v, want only the iPhone row (id 1)", rows)
+	}
+	actives, err := s.ListActive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actives) != 1 || actives[0].ID != 1 {
+		t.Fatalf("active after prune = %+v, want only the iPhone row (id 1)", actives)
+	}
+}

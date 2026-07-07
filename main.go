@@ -202,6 +202,7 @@ func envDuration(key string, def time.Duration) (time.Duration, error) {
 
 func main() {
 	once := flag.Bool("once", false, "run one scrape+compare cycle and exit")
+	pruneRetired := flag.Bool("prune-retired", false, "delete listings whose category is not in IFYND_CATEGORIES, then exit")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -218,6 +219,23 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+
+	// Maintenance one-shot: purge listings for categories no longer in
+	// IFYND_CATEGORIES, then exit. Runs before the notifier/app are built so a
+	// notifier misconfig can't block cleanup.
+	if *pruneRetired {
+		keep := make([]int, len(cfg.Categories))
+		for i, c := range cfg.Categories {
+			keep[i] = c.ID
+		}
+		sold, active, err := st.PruneCategories(keep)
+		if err != nil {
+			slog.Error("prune", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("pruned retired categories", "keep", keep, "sold_deleted", sold, "active_deleted", active)
+		return
+	}
 
 	notifier, err := notify.New(cfg.Notifier)
 	if err != nil {
