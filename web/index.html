@@ -236,6 +236,17 @@ const esc = (s) => s.replace(/[&<>"']/g, (c) =>
 const kr = (n) => Math.round(n).toLocaleString("sv-SE");
 const gbText = (gb) => gb >= 1024 ? (gb / 1024) + " TB" : gb + " GB";
 
+// generationOf collapses a model to its numbered generation so "iPhone 16",
+// "iPhone 16e", "iPhone 16 Plus" and "iPhone 16 Pro Max" all group under
+// "iPhone 16". Non-numbered models (SE by year, X-series) are their own group.
+const generationOf = (model) => {
+  const m = model.match(/^iPhone\s+(\d+)/i);
+  return m ? "iPhone " + m[1] : model;
+};
+// Sort generations newest-numbered first, then the rest alphabetically.
+const genNum = (g) => { const m = g.match(/(\d+)/); return m ? +m[1] : -1; };
+const cmpGeneration = (a, b) => genNum(b) - genNum(a) || a.localeCompare(b, "sv");
+
 const HEADS = {
   active: `<tr>
     <th>Annons</th>
@@ -337,10 +348,16 @@ function render() {
   $("onlyHitsWrap").style.display = isActive ? "" : "none";
   $("thead").innerHTML = HEADS[view];
 
+  // "all:iPhone 16" matches the whole generation; a plain value is exact.
+  const modelPred = model.startsWith("all:")
+    ? (l) => generationOf(l.model) === model.slice(4)
+    : model
+      ? (l) => l.model === model
+      : () => true;
+
   const source = isActive ? listings : bargains;
   let rows = source.filter((l) =>
-    (!q || (l.title + " " + l.model).toLowerCase().includes(q)) &&
-    (!model || l.model === model));
+    (!q || (l.title + " " + l.model).toLowerCase().includes(q)) && modelPred(l));
   if (isActive && $("onlyHits").checked) {
     // is_hit is purely price-based; a broken flag vetoes it visually, but the
     // row stays (red) in the fynd view so an accidental flag can be undone.
@@ -374,22 +391,25 @@ function render() {
 }
 
 // Mirror the active filters into the URL so a filtered view is shareable and
-// bookmarkable (e.g. /?model=iPhone+16). Sort and transient UI stay out.
+// bookmarkable: ?model=iPhone+16+Pro for one model, ?gen=iPhone+16 for a whole
+// generation, plus ?q, ?view, ?hits. Sort and transient UI stay out.
 function writeURL() {
   const p = new URLSearchParams();
   const q = $("q").value.trim();
+  const model = $("model").value;
   if (q) p.set("q", q);
-  if ($("model").value) p.set("model", $("model").value);
+  if (model.startsWith("all:")) p.set("gen", model.slice(4));
+  else if (model) p.set("model", model);
   if (view !== "active") p.set("view", view);
   if ($("onlyHits").checked) p.set("hits", "1");
   const qs = p.toString();
   history.replaceState(null, "", qs ? "?" + qs : location.pathname);
 }
 
-// Authoritatively set the filters from the URL. Model is matched loosely
-// (case- and space-insensitive) so /?model=iphone16 selects "iPhone 16".
-// Runs on first load and on back/forward; call it after the model <option>s
-// have been populated.
+// Authoritatively set the filters from the URL. Model/gen are matched loosely
+// (case- and space-insensitive) so /?model=iphone16 selects "iPhone 16" and
+// /?gen=iphone16 selects "Alla iPhone 16". Runs on first load and on
+// back/forward; call it after the model <option>s have been populated.
 function applyURL() {
   const p = new URLSearchParams(location.search);
   const norm = (s) => s.toLowerCase().replace(/\s+/g, "");
@@ -399,7 +419,9 @@ function applyURL() {
   $("q").value = p.get("q") || "";
   $("onlyHits").checked = p.get("hits") === "1";
   $("model").value = "";
-  const want = p.get("model") ? norm(p.get("model")) : "";
+  // A gen param maps to the "all:<gen>" option value; model to a plain one.
+  const target = p.get("gen") ? "all:" + p.get("gen") : p.get("model") || "";
+  const want = target ? norm(target) : "";
   if (want) {
     for (const opt of $("model").options) {
       if (opt.value && norm(opt.value) === want) { $("model").value = opt.value; break; }
@@ -417,14 +439,31 @@ async function exclude(id) {
   render();
 }
 
-// The model dropdown offers every model seen in the current data.
+// The model dropdown groups models by generation. A generation with more than
+// one variant gets an "Alla iPhone 16" row (value "all:iPhone 16") above its
+// variants; singletons stay as a plain option.
 function refreshModelOptions() {
-  const models = [...new Set(
-    [...listings, ...bargains].map((l) => l.model))].sort();
   const sel = $("model"), cur = sel.value;
-  sel.length = 1;
-  for (const m of models) sel.add(new Option(m, m));
-  sel.value = models.includes(cur) ? cur : "";
+  const byGen = new Map();
+  for (const m of new Set([...listings, ...bargains].map((l) => l.model))) {
+    const g = generationOf(m);
+    (byGen.get(g) || byGen.set(g, []).get(g)).push(m);
+  }
+  sel.length = 1; // keep the leading "Alla modeller"
+  for (const g of [...byGen.keys()].sort(cmpGeneration)) {
+    const variants = byGen.get(g).sort((a, b) => a.localeCompare(b, "sv"));
+    if (variants.length === 1) {
+      sel.add(new Option(variants[0], variants[0]));
+      continue;
+    }
+    const og = document.createElement("optgroup");
+    og.label = g;
+    og.appendChild(new Option(`Alla ${g}`, "all:" + g));
+    for (const m of variants) og.appendChild(new Option(m, m));
+    sel.appendChild(og);
+  }
+  sel.value = cur; // restore selection; falls back to "" if it's gone
+  if (sel.selectedIndex < 0) sel.value = "";
 }
 
 async function toggleBroken(id, broken) {

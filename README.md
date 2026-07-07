@@ -61,10 +61,13 @@ docker compose pull && docker compose up -d
 ## Webbgränssnitt och API
 
 `http://<host>:8080/` visar aktiva annonser och historiska fynd, med filter
-för modell och fritext. Filtren speglas i URL:en så att en filtrerad vy går
-att bokmärka eller dela — `/?model=iPhone+16`, `/?view=bargains`,
-`/?q=pro+max&hits=1` (modellen matchas tolerant, så `/?model=iphone16`
-funkar också). Varje annons har två knappar: **Trasig**
+för modell och fritext. Modellfiltret grupperar per generation: välj
+**Alla iPhone 16** för att se alla varianter (16, 16e, 16 Plus, 16 Pro,
+16 Pro Max) på en gång, eller en enskild modell. Filtren speglas i URL:en så
+att en filtrerad vy går att bokmärka eller dela — `/?gen=iPhone+16` (hela
+generationen), `/?model=iPhone+16+Pro` (en modell), `/?view=bargains`,
+`/?q=pro+max&hits=1`. Modell och generation matchas tolerant, så
+`/?gen=iphone16` funkar också. Varje annons har två knappar: **Trasig**
 (röd, kan aldrig bli fynd, priset hålls utanför statistiken) och
 **Exkludera** (tas bort och kommer inte tillbaka). Bakom sidan ligger ett
 litet JSON-API — `/api/listings`, `/api/bargains`, `/api/hits`,
