@@ -28,9 +28,10 @@ import (
 type Category struct {
 	ID     int
 	Family classify.Family
-	// Filter is extra search facets. The phone and tablet categories are
-	// Apple-only by definition; the laptop category holds every brand, so
-	// the MacBook family filters on af-computer_brand=Apple.
+	// Filter is extra search facets to append to the query. The iPhone
+	// category is Apple-only by definition and needs none; a multi-brand
+	// category (e.g. a re-added laptop family) would set an
+	// af-computer_brand=Apple filter here.
 	Filter url.Values
 }
 
@@ -73,7 +74,7 @@ func loadConfig() (Config, error) {
 	if cfg.RequestDelay, err = envDuration("IFYND_REQUEST_DELAY", 1500*time.Millisecond); err != nil {
 		return cfg, err
 	}
-	if cfg.Categories, err = parseCategories(envStr("IFYND_CATEGORIES", "340186:iphone,342496:ipad,302393:macbook")); err != nil {
+	if cfg.Categories, err = parseCategories(envStr("IFYND_CATEGORIES", "340186:iphone")); err != nil {
 		return cfg, err
 	}
 	if cfg.ThresholdPct, err = envFloat("IFYND_THRESHOLD_PCT", 15); err != nil {
@@ -116,7 +117,7 @@ func loadConfig() (Config, error) {
 	return cfg, nil
 }
 
-// parseCategories parses "340186:iphone,342496:ipad".
+// parseCategories parses "340186:iphone" (comma-separated for multiple).
 func parseCategories(s string) ([]Category, error) {
 	var out []Category
 	for _, part := range strings.Split(s, ",") {
@@ -132,11 +133,7 @@ func parseCategories(s string) ([]Category, error) {
 		if err != nil {
 			return nil, fmt.Errorf("IFYND_CATEGORIES: %w", err)
 		}
-		c := Category{ID: n, Family: f}
-		if f == classify.MacBook {
-			c.Filter = url.Values{"af-computer_brand": {"Apple"}}
-		}
-		out = append(out, c)
+		out = append(out, Category{ID: n, Family: f})
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("IFYND_CATEGORIES: no categories configured")

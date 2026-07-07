@@ -16,21 +16,22 @@ import (
 	"github.com/klppl/ifynd/internal/tradera"
 )
 
-// Family selects which device family's model grammar to apply.
+// Family selects which device family's model grammar to apply. iPhone is the
+// only family today; the type stays an enum so a new category (e.g. a
+// re-added iPad/MacBook, or Watch) is a matter of adding a constant, a
+// junkByFamily entry, and a branch in Item.
 type Family string
 
 const (
-	IPhone  Family = "iphone"
-	IPad    Family = "ipad"
-	MacBook Family = "macbook"
+	IPhone Family = "iphone"
 )
 
 func ParseFamily(s string) (Family, error) {
 	switch Family(s) {
-	case IPhone, IPad, MacBook:
+	case IPhone:
 		return Family(s), nil
 	}
-	return "", fmt.Errorf("unknown family %q (want iphone, ipad or macbook)", s)
+	return "", fmt.Errorf("unknown family %q (want iphone)", s)
 }
 
 // Result is a confident classification.
@@ -57,8 +58,7 @@ var brokenWords = []string{
 	"extra frakt", "fraktkostnad", "ordernr", "box till", "låda till",
 }
 
-// accessoryWords reject accessory/empty-box/bundle listings in the phone
-// and tablet categories.
+// accessoryWords reject accessory/empty-box/bundle listings.
 var accessoryWords = []string{
 	"skal", "fodral", "case", "hörlur", "airpod", "laddare", "kabel",
 	"adapter", "skärmskydd", "pansarglas", "endast kartong", "tom kartong",
@@ -67,43 +67,16 @@ var accessoryWords = []string{
 	"kopia", "replika", "watch", "paket", "stycken", " pack",
 }
 
-// macAccessoryWords is the laptop-tuned counterpart. Laptop titles
-// routinely mention included extras ("med laddare och kabel"), so the
-// accessory words need a "till" suffix to mean the accessory is the item.
-var macAccessoryWords = []string{
-	"skal till", "fodral till", "case till", "laddare till", "batteri till",
-	"skärm till", "display till", "tangentbord till", "moderkort",
-	"attrapp", "dummy", "kopia", "replika", "superdrive", "docka",
-	"dockning", "endast kartong", "tom kartong", "bara kartong",
-	"kartong till", "box only", "empty box", "watch", "paket", "stycken",
-	" pack",
-	// other Apple machines filed in the laptop category
-	"imac", "mac mini", "macmini", "mac studio", "ibook", "powerbook",
-	"iphone", "ipad", "airpod", "hörlur",
-}
+// multiLotRe catches "3 iPhone", "2 st iPhone" — lots sold as one listing,
+// whose single price would poison a per-device bucket. Single digit only, so
+// years ("2021 iPhone") never match.
+var multiLotRe = regexp.MustCompile(`(?i)\b\d\s*(?:st\.?\s+)?iphone`)
 
-// ipadFamilyPrefix maps the tablet_brand facet to the canonical model prefix
-// the title must agree with. Bare "iPad" is NOT here: sellers use it as a
-// generic default (observed: bulk sellers filing "iPad Air 2" under it), so
-// like a bare "iPhone SE" attribute it defers to the more specific title.
-var ipadFamilyPrefix = map[string]string{
-	"ipad air":  "iPad Air",
-	"ipad pro":  "iPad Pro",
-	"ipad mini": "iPad mini",
-}
-
-// multiLotRe catches "3 iPad gen 5", "2 st MacBook" — lots sold as one
-// listing, whose single price would poison a per-device bucket. Single digit
-// only, so years ("2021 iPad Pro") never match, and "M1 MacBook" is safe
-// (no word boundary inside "M1").
-var multiLotRe = regexp.MustCompile(`(?i)\b\d\s*(?:st\.?\s+)?(?:ipad|iphone|macbook)`)
-
-// junkByFamily is the full reject list per family: shared broken/locked
-// words plus family-tuned accessory words and the other families' devices.
+// junkByFamily is the full reject list per family: shared broken/locked words
+// plus family-tuned accessory words and the other families' devices. Keyed by
+// family so a new category plugs in its own list.
 var junkByFamily = map[Family][]string{
-	IPhone:  slices.Concat(brokenWords, accessoryWords, []string{"ipad", "surfplatta"}),
-	IPad:    slices.Concat(brokenWords, accessoryWords, []string{"iphone", "tangentbord till", "penna till", "pencil till"}),
-	MacBook: slices.Concat(brokenWords, macAccessoryWords),
+	IPhone: slices.Concat(brokenWords, accessoryWords, []string{"ipad", "surfplatta", "macbook"}),
 }
 
 // junkPrefixes catch titles that OPEN with a non-phone word where the word
@@ -149,52 +122,8 @@ func Item(it *tradera.Item, fam Family) (res Result, ok bool, reason string) {
 			}
 		}
 	}
-	if fam == MacBook {
-		// The laptop category has no model/storage/year attributes and the
-		// RAM facet is unreliable, so the title is the only source; the
-		// processor facet ("Apple"/"Intel") serves as a cross-check.
-		model := macModelFromTitle(it.ShortDescription, strings.ToLower(it.Attr("computer_processor_model")))
-		if model == "" {
-			return res, false, "no confident model"
-		}
-		gb, conflict := macStorageFromTitle(title)
-		if conflict {
-			return res, false, "ambiguous storage in title"
-		}
-		if gb == 0 {
-			return res, false, "no storage size"
-		}
-		return Result{Model: model, StorageGB: gb}, true, ""
-	}
-
 	if brand := it.Attr("mobile_brand"); brand != "" && !strings.EqualFold(brand, "apple") {
 		return res, false, "brand: " + brand
-	}
-	// In the iPad category the "brand" facet holds the iPad family
-	// ("iPad", "iPad Air", "iPad Pro", "iPad mini"), not "Apple".
-	tabletBrand := strings.ToLower(it.Attr("tablet_brand"))
-	if tabletBrand != "" && tabletBrand != "apple" && !strings.HasPrefix(tabletBrand, "ipad") {
-		return res, false, "brand: " + it.Attr("tablet_brand")
-	}
-
-	if fam == IPad {
-		// No model/storage attributes exist in this category — the model
-		// comes from the title, cross-checked against the family facet.
-		model := ipadModelFromTitle(it.ShortDescription)
-		if model == "" {
-			return res, false, "no confident model"
-		}
-		if want, ok := ipadFamilyPrefix[tabletBrand]; ok && !strings.HasPrefix(model, want) {
-			return res, false, fmt.Sprintf("family mismatch: attr=%s title=%s", it.Attr("tablet_brand"), model)
-		}
-		gb, conflict := storageFromTitle(title)
-		if conflict {
-			return res, false, "ambiguous storage in title"
-		}
-		if gb == 0 {
-			return res, false, "no storage size"
-		}
-		return Result{Model: model, StorageGB: gb}, true, ""
 	}
 
 	// Sellers get the structured attributes wrong ("iPhone 16" attribute on

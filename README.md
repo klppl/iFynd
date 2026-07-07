@@ -1,9 +1,8 @@
 # iFynd
 
 En liten Go-tjänst som bevakar [Tradera](https://www.tradera.com) efter
-felprisade iPhones, iPads och MacBooks. Den bygger sin egen historik över
-vad varje modell faktiskt säljs för, och flaggar köp nu-annonser som ligger
-rejält under det.
+felprisade iPhones. Den bygger sin egen historik över vad varje modell
+faktiskt säljs för, och flaggar köp nu-annonser som ligger rejält under det.
 
 Fliken **Aktiva annonser** är radarn: allt som är till salu just nu, jämfört
 med medianen av sålda exemplar med exakt samma modell och lagring. Fynd blir
@@ -26,7 +25,7 @@ sorteras i en bucket per modell och lagring, och aktiva köp nu-annonser
 jämförs med medianpriset för sålda i samma bucket. Ligger priset tillräckligt
 långt under flaggas det som fynd och notifieras, en gång per annons. Allt som
 inte kan klassificeras med säkerhet — tillbehör, paket, reservdelsobjekt,
-titlar som bara säger "iPad" — hoppas över, för en felgissning i
+titlar utan tydlig modell eller lagring — hoppas över, för en felgissning i
 prishistoriken är värre än en saknad datapunkt.
 
 ## Kör
@@ -62,7 +61,7 @@ docker compose pull && docker compose up -d
 ## Webbgränssnitt och API
 
 `http://<host>:8080/` visar aktiva annonser och historiska fynd, med filter
-för familj, modell och fritext. Varje annons har två knappar: **Trasig**
+för modell och fritext. Varje annons har två knappar: **Trasig**
 (röd, kan aldrig bli fynd, priset hålls utanför statistiken) och
 **Exkludera** (tas bort och kommer inte tillbaka). Bakom sidan ligger ett
 litet JSON-API — `/api/listings`, `/api/bargains`, `/api/hits`,
