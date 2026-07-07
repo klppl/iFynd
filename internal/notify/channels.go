@@ -35,8 +35,15 @@ func send(req *http.Request) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(io.LimitReader(res.Body, 512))
-		return fmt.Errorf("%s: %s", res.Status, strings.TrimSpace(string(body)))
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 300))
+		msg := strings.TrimSpace(string(body))
+		// A CDN/proxy in front of the target (e.g. a self-hosted ntfy behind
+		// Cloudflare) answers 5xx with an HTML page — report just the status
+		// instead of a wall of markup.
+		if msg == "" || strings.HasPrefix(msg, "<") {
+			return fmt.Errorf("%s", res.Status)
+		}
+		return fmt.Errorf("%s: %s", res.Status, msg)
 	}
 	return nil
 }
