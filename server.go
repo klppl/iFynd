@@ -358,8 +358,12 @@ func (a *App) adminRoutes(r chi.Router, requireAuth func(http.HandlerFunc) http.
 			RefPrice: 8500, PctBelow: 17.7, Samples: 42,
 			Title: "Testnotis från iFynd", URL: "https://www.tradera.com",
 		}
+		// A failed delivery is an expected outcome (bad URL/token), not a
+		// server error: report it as 200 {ok:false,error} so a proxy/CDN in
+		// front (e.g. Cloudflare) doesn't swallow a 5xx and replace the body
+		// with its own error page.
 		if err := n.Notify(req.Context(), sample); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
 		writeJSON(w, map[string]bool{"ok": true})

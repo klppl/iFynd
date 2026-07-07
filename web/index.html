@@ -623,14 +623,26 @@ function renderAlerts() {
   </tr>`).join("") || `<tr class="empty-row"><td colspan="6">Inga bevakningar än — utan bevakningar skickas inga notiser.</td></tr>`;
 }
 
+// briefError turns a response body into one readable line. Server errors are
+// short text, but a proxy/CDN in front can return a full HTML page — collapse
+// that to just the status.
+function briefError(res, text) {
+  const t = (text || "").trim();
+  if (!t || t[0] === "<" || t.length > 200) return `servern svarade ${res.status}`;
+  return t;
+}
+
 async function adminPost(url, body) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) { alert("Nätverksfel: " + e); return null; }
   if (res.status === 401) { alert("Inloggning krävs — klicka Logga in."); return null; }
-  if (!res.ok) { alert("Fel: " + (await res.text())); return null; }
+  if (!res.ok) { alert("Fel: " + briefError(res, await res.text().catch(() => ""))); return null; }
   return res.json().catch(() => ({}));
 }
 
@@ -655,7 +667,10 @@ async function addChannel() {
   }
 }
 async function testChannel(cfg) {
-  if (await adminPost("/api/admin/channels/test", cfg)) alert("Testnotis skickad ✔");
+  const r = await adminPost("/api/admin/channels/test", cfg);
+  if (!r) return; // network/auth error already surfaced
+  if (r.ok) alert("Testnotis skickad ✔");
+  else alert("Testet misslyckades: " + (r.error || "okänt fel"));
 }
 async function delChannel(id) {
   if (confirm("Ta bort kanalen?") && await adminPost(`/api/admin/channels/${id}/delete`)) loadAdmin();

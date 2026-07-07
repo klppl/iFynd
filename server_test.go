@@ -1,12 +1,42 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// A channel test that fails to deliver must come back as 200 {ok:false,error},
+// never a 5xx — a CDN/proxy in front swallows 5xx and replaces the body with
+// its own error page, hiding the real reason from the user.
+func TestChannelTestFailureIs200(t *testing.T) {
+	app := &App{cfg: Config{}}
+	srv := httptest.NewServer(app.Router())
+	defer srv.Close()
+
+	// port 1 refuses instantly: delivery fails without touching the network.
+	res, err := http.Post(srv.URL+"/api/admin/channels/test", "application/json",
+		strings.NewReader(`{"kind":"webhook","url":"http://127.0.0.1:1/x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("failed test delivery: got %d, want 200", res.StatusCode)
+	}
+	var body struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.OK || body.Error == "" {
+		t.Fatalf("want ok:false with an error, got %+v", body)
+	}
+}
 
 // The mutating endpoints parse the id before touching the store, so a
 // non-numeric id distinguishes "past the auth gate" (400) from
