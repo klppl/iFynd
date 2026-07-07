@@ -28,7 +28,17 @@ func doJSON(ctx context.Context, url string, payload any, headers map[string]str
 	return send(req)
 }
 
+// notifyUA is a real browser User-Agent. A notification target behind
+// Cloudflare Bot Fight Mode / a WAF will 403 the default "Go-http-client" UA;
+// a browser UA is the cheapest thing that often gets a server-to-server call
+// through. (If it still 403s, point the channel at the target's internal URL
+// to skip the CDN entirely.)
+const notifyUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
 func send(req *http.Request) error {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", notifyUA)
+	}
 	res, err := httpClient.Do(req)
 	if err != nil {
 		return err
