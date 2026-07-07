@@ -131,12 +131,16 @@ func parseCategories(s string) ([]Category, error) {
 		}
 		f, err := classify.ParseFamily(fam)
 		if err != nil {
-			return nil, fmt.Errorf("IFYND_CATEGORIES: %w", err)
+			// A retired family (e.g. a stale ipad/macbook entry left in a
+			// deployment's env) must not crash-loop the service — skip it and
+			// run whatever categories remain valid.
+			slog.Warn("IFYND_CATEGORIES: skipping category", "err", err)
+			continue
 		}
 		out = append(out, Category{ID: n, Family: f})
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("IFYND_CATEGORIES: no categories configured")
+		return nil, fmt.Errorf("IFYND_CATEGORIES: no valid categories configured")
 	}
 	return out, nil
 }
