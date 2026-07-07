@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,14 +19,110 @@ import (
 )
 
 type App struct {
-	cfg      Config
-	store    *store.Store
-	client   *tradera.Client
-	notifier notify.Notifier
+	cfg    Config
+	store  *store.Store
+	client *tradera.Client
 
 	mu     sync.Mutex
 	status Status
 	hits   []notify.Hit // hits found on the last run (for /api/hits)
+}
+
+// Tuning is the effective detection config: the IFYND_* env defaults with any
+// admin overrides (settings table) applied on top. Resolved fresh so admin
+// edits take effect without a restart.
+type Tuning struct {
+	ThresholdPct float64
+	MinSamples   int
+	MinPrice     int
+}
+
+func (a *App) tuning() Tuning {
+	t := Tuning{ThresholdPct: a.cfg.ThresholdPct, MinSamples: a.cfg.MinSamples, MinPrice: a.cfg.MinPrice}
+	s, err := a.store.Settings()
+	if err != nil {
+		slog.Warn("load settings", "err", err)
+		return t
+	}
+	if v, ok := s["threshold_pct"]; ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			t.ThresholdPct = f
+		}
+	}
+	if v, ok := s["min_samples"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			t.MinSamples = n
+		}
+	}
+	if v, ok := s["min_price"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			t.MinPrice = n
+		}
+	}
+	return t
+}
+
+// buildNotifier assembles a Multi from the enabled channels in the store. The
+// log channel is always included so alerts land in the process log even with
+// no channels configured.
+func (a *App) buildNotifier() notify.Notifier {
+	multi := notify.Multi{notify.LogNotifier{}}
+	channels, err := a.store.Channels()
+	if err != nil {
+		slog.Warn("load channels", "err", err)
+		return multi
+	}
+	for _, c := range channels {
+		if !c.Enabled {
+			continue
+		}
+		n, err := notify.Build(c.Kind, c.URL, c.Token)
+		if err != nil {
+			slog.Warn("skip channel", "id", c.ID, "kind", c.Kind, "err", err)
+			continue
+		}
+		multi = append(multi, n)
+	}
+	return multi
+}
+
+// matchAlert returns the first enabled watchlist rule that a listing satisfies:
+// pattern (exact model or generation) and optional storage match, underpriced
+// by the rule's threshold (or the global one), and under any price ceiling.
+func matchAlert(alerts []store.Alert, model string, gb, price int, ref, globalThreshold float64) *store.Alert {
+	for i := range alerts {
+		r := &alerts[i]
+		if !r.Enabled {
+			continue
+		}
+		if r.StorageGB != 0 && r.StorageGB != gb {
+			continue
+		}
+		switch r.MatchType {
+		case "model":
+			if !strings.EqualFold(model, r.Pattern) {
+				continue
+			}
+		case "generation":
+			if !strings.EqualFold(classify.Generation(model), r.Pattern) {
+				continue
+			}
+		default:
+			continue
+		}
+		threshold := globalThreshold
+		if r.MinPctBelow > 0 {
+			threshold = r.MinPctBelow
+		}
+		if !analyze.IsHit(price, ref, threshold) {
+			continue
+		}
+		if r.MaxPrice > 0 && price > r.MaxPrice {
+			continue
+		}
+		return r
+	}
+	return nil
 }
 
 type Status struct {
@@ -50,6 +148,7 @@ func (a *App) Run(ctx context.Context) error {
 	var st Status
 	st.LastRunStart = start.UTC()
 
+	eff := a.tuning()
 	runErr := func() error {
 		blocked, err := a.store.BlockedIDs()
 		if err != nil {
@@ -57,16 +156,16 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		var actives []activeItem
 		for _, cat := range a.cfg.Categories {
-			if err := a.scrapeSold(ctx, &st, blocked, cat); err != nil {
+			if err := a.scrapeSold(ctx, &st, blocked, cat, eff.MinPrice); err != nil {
 				return fmt.Errorf("scrape sold %d: %w", cat.ID, err)
 			}
-			catActives, err := a.scrapeActive(ctx, &st, blocked, cat)
+			catActives, err := a.scrapeActive(ctx, &st, blocked, cat, eff.MinPrice)
 			if err != nil {
 				return fmt.Errorf("scrape active %d: %w", cat.ID, err)
 			}
 			actives = append(actives, catActives...)
 		}
-		if err := a.compare(ctx, actives, &st); err != nil {
+		if err := a.compare(ctx, actives, &st, eff); err != nil {
 			return fmt.Errorf("compare: %w", err)
 		}
 		if pruned, err := a.store.PruneActive(time.Now().Add(-72 * time.Hour)); err != nil {
@@ -101,7 +200,7 @@ func (a *App) Run(ctx context.Context) error {
 // records. On an empty DB it backfills up to BackfillPages; otherwise it stops
 // once a page contains only listings started before the SoldWindowDays cutoff
 // — everything that can have sold since the last run was listed after it.
-func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]string, cat Category) error {
+func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]string, cat Category, minPrice int) error {
 	existing, err := a.store.SoldCountCategory(cat.ID)
 	if err != nil {
 		return err
@@ -145,7 +244,7 @@ func (a *App) scrapeSold(ctx context.Context, st *Status, blocked map[int64]stri
 				// listing's sale price must not enter the price history.
 				ok, reason = false, "blocked: "+why
 			}
-			if ok && it.SoldPrice() < a.cfg.MinPrice {
+			if ok && it.SoldPrice() < minPrice {
 				// 1-3 kr "sales" are shipping surcharges, scams, or mistakes,
 				// never a working phone changing hands.
 				ok, reason = false, fmt.Sprintf("implausible price %d kr", it.SoldPrice())
@@ -187,7 +286,7 @@ type activeItem struct {
 // scrapeActive walks all active fixed-price pages and upserts classified
 // listings. It returns this run's classified items so the comparison never
 // considers listings that have already ended.
-func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]string, cat Category) ([]activeItem, error) {
+func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]string, cat Category, minPrice int) ([]activeItem, error) {
 	q := tradera.ActiveQuery(cat.ID)
 	maps.Copy(q.Params, cat.Filter)
 	var out []activeItem
@@ -211,7 +310,7 @@ func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]st
 				continue // user removed it; broken ones stay visible and keep upserting
 			}
 			c, ok, reason := classify.Item(it, cat.Family)
-			if ok && it.FixedPrice() < a.cfg.MinPrice {
+			if ok && it.FixedPrice() < minPrice {
 				ok, reason = false, fmt.Sprintf("implausible price %d kr", it.FixedPrice())
 			}
 			if !ok {
@@ -236,10 +335,16 @@ func (a *App) scrapeActive(ctx context.Context, st *Status, blocked map[int64]st
 	return out, nil
 }
 
-// compare checks every classified active listing against its bucket's
-// reference price and notifies new hits.
-func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) error {
+// compare checks every classified active listing against its bucket reference.
+// It records all price-based hits for the radar/status, but only listings that
+// match an enabled watchlist alert are notified (watchlist-only mode).
+func (a *App) compare(ctx context.Context, actives []activeItem, st *Status, eff Tuning) error {
 	since := time.Now().AddDate(0, 0, -a.cfg.LookbackDays)
+
+	alerts, err := a.store.Alerts()
+	if err != nil {
+		return fmt.Errorf("load alerts: %w", err)
+	}
 
 	type bucketKey struct {
 		model string
@@ -250,7 +355,8 @@ func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) err
 		samples int
 	}{}
 
-	var hits []notify.Hit
+	var hits []notify.Hit      // all price-based hits, for the radar/status
+	var toNotify []notify.Hit  // watchlist matches to push
 	for _, ai := range actives {
 		key := bucketKey{ai.res.Model, ai.res.StorageGB}
 		r, cached := refs[key]
@@ -260,15 +366,12 @@ func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) err
 				return err
 			}
 			r.samples = len(prices)
-			if r.samples >= a.cfg.MinSamples {
+			if r.samples >= eff.MinSamples {
 				r.ref = analyze.Reference(prices, a.cfg.Metric, a.cfg.TrimPct)
 			}
 			refs[key] = r
 		}
-		if r.samples < a.cfg.MinSamples || r.ref <= 0 {
-			continue
-		}
-		if !analyze.IsHit(ai.listing.Price, r.ref, a.cfg.ThresholdPct) {
+		if r.samples < eff.MinSamples || r.ref <= 0 {
 			continue
 		}
 		// User-flagged broken devices are false positives, not deals.
@@ -277,20 +380,27 @@ func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) err
 		} else if broken {
 			continue
 		}
-		hits = append(hits, notify.Hit{
+		hit := notify.Hit{
 			ListingID: ai.listing.ID,
 			Model:     ai.res.Model, StorageGB: ai.res.StorageGB,
 			Price: ai.listing.Price, RefPrice: r.ref,
 			PctBelow: analyze.PctBelow(ai.listing.Price, r.ref),
 			Samples:  r.samples,
 			Title:    ai.listing.Title, URL: ai.listing.URL,
-		})
+		}
+		if analyze.IsHit(ai.listing.Price, r.ref, eff.ThresholdPct) {
+			hits = append(hits, hit)
+		}
+		if matchAlert(alerts, ai.res.Model, ai.res.StorageGB, ai.listing.Price, r.ref, eff.ThresholdPct) != nil {
+			toNotify = append(toNotify, hit)
+		}
 	}
 	st.BucketsChecked = len(refs)
 	st.HitsLastRun = len(hits)
 
+	notifier := a.buildNotifier()
 	var errs []error
-	for _, h := range hits {
+	for _, h := range toNotify {
 		notified, _, err := a.store.Flags(h.ListingID)
 		if err != nil {
 			return err
@@ -298,7 +408,7 @@ func (a *App) compare(ctx context.Context, actives []activeItem, st *Status) err
 		if notified {
 			continue
 		}
-		if err := a.notifier.Notify(ctx, h); err != nil {
+		if err := notifier.Notify(ctx, h); err != nil {
 			// Leave notified=0 so the next run retries.
 			errs = append(errs, fmt.Errorf("notify %d: %w", h.ListingID, err))
 			continue

@@ -186,6 +186,36 @@ tr.broken button.flag { border-style: dashed; }
   .col-seen, .col-samples { display: none; }
   td.title { max-width: 160px; }
 }
+
+/* admin */
+#adminPanel { padding: 16px 10px 40px; display: grid; gap: 16px; max-width: 900px; }
+.card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; padding: 16px 18px;
+}
+.card h2 { font-size: 15px; margin: 0 0 4px; }
+.card .hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.fields { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fields label { display: inline-flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.fields input, .fields select {
+  font: 13px var(--sans); padding: 7px 9px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-width: 120px;
+}
+.fields input[type=number] { min-width: 90px; }
+.card button {
+  font: 13px var(--sans); padding: 7px 13px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--ink); color: var(--surface);
+}
+.card button.ghost { background: transparent; color: var(--ink); }
+.card button.del { background: transparent; color: var(--danger); border-color: var(--danger); padding: 4px 9px; }
+table.mini { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 13px; }
+table.mini td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+table.mini td.u { color: var(--muted); font-family: var(--mono); font-size: 11px;
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.mini .empty-row td { color: var(--muted); text-align: center; }
+.pill { font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); text-transform: uppercase; letter-spacing: .04em; }
+#adminAuth { color: var(--danger); font-size: 13px; }
+.bell { color: var(--deal); }
 </style>
 </head>
 <body>
@@ -200,6 +230,7 @@ tr.broken button.flag { border-style: dashed; }
 <nav class="tabs">
   <button class="active" data-view="active">Aktiva annonser</button>
   <button data-view="bargains">Sålda fynd <span class="count" id="bargainCount"></span></button>
+  <button data-view="admin">Inställningar</button>
 </nav>
 
 <div class="toolbar">
@@ -214,6 +245,54 @@ tr.broken button.flag { border-style: dashed; }
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" hidden></div>
+
+<section id="adminPanel" hidden>
+  <p id="adminAuth" hidden>Logga in uppe till höger för att se och ändra inställningar.</p>
+
+  <div class="card">
+    <h2>Detektering</h2>
+    <p class="hint">Styr när en annons räknas som ett fynd. Ändringar gäller från nästa körning.</p>
+    <div class="fields">
+      <label>Tröskel % under median<input type="number" id="cfgThreshold" step="0.5" min="1" max="99"></label>
+      <label>Min. antal sålda<input type="number" id="cfgMinSamples" min="1"></label>
+      <label>Min. pris (kr)<input type="number" id="cfgMinPrice" min="0"></label>
+      <button id="cfgSave">Spara</button>
+    </div>
+    <p class="hint" id="cfgInfo"></p>
+  </div>
+
+  <div class="card">
+    <h2>Notiskanaler</h2>
+    <p class="hint">Notiser skickas till alla aktiva kanaler samtidigt — men bara för modeller i din bevakningslista nedan.</p>
+    <table class="mini"><tbody id="channelRows"></tbody></table>
+    <div class="fields">
+      <select id="chKind">
+        <option value="discord">Discord</option>
+        <option value="ntfy">ntfy</option>
+        <option value="gotify">Gotify</option>
+        <option value="webhook">Webhook</option>
+      </select>
+      <input id="chName" placeholder="Namn (valfritt)">
+      <input id="chUrl" placeholder="URL / webhook / topic" size="30">
+      <input id="chToken" placeholder="Token (Gotify/ntfy)">
+      <button id="chTest" class="ghost">Testa</button>
+      <button id="chAdd">Lägg till</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Bevakningar</h2>
+    <p class="hint">Få en notis när en bevakad modell dyker upp under medianen (och ev. under ditt takpris). Välj en enskild modell eller en hel generation.</p>
+    <table class="mini"><tbody id="alertRows"></tbody></table>
+    <div class="fields">
+      <label>Modell<select id="alModel"><option value="">Välj modell …</option></select></label>
+      <label>Lagring GB<input type="number" id="alStorage" placeholder="alla" min="0"></label>
+      <label>Egen tröskel %<input type="number" id="alPct" placeholder="global" min="1" max="99" step="0.5"></label>
+      <label>Takpris kr<input type="number" id="alMax" placeholder="inget" min="0"></label>
+      <button id="alAdd">Lägg till bevakning</button>
+    </div>
+  </div>
+</section>
 
 <script>
 "use strict";
@@ -303,6 +382,7 @@ function activeRow(l) {
   const dis = locked() ? ' disabled title="Logga in för att ändra"' : "";
   const sub =
     (l.is_hit && !l.broken ? ' <span class="badge">fynd</span>' : "") +
+    (l.alerted ? ' <span class="bell" title="Bevakad – ger notis">🔔</span>' : "") +
     (l.broken ? ' · <span class="broken-mark">trasig</span>' : "");
   return `<tr class="${l.broken ? "broken" : l.is_hit ? "hit" : ""}">
     ${titleCell(l, sub)}
@@ -342,6 +422,12 @@ const SORTVALS = {
 };
 
 function render() {
+  const isAdmin = view === "admin";
+  document.querySelector(".toolbar").style.display = isAdmin ? "none" : "";
+  document.querySelector("table").style.display = isAdmin ? "none" : "";
+  $("adminPanel").hidden = !isAdmin;
+  if (isAdmin) { $("empty").hidden = true; writeURL(); return; }
+
   const q = $("q").value.trim().toLowerCase();
   const model = $("model").value;
   const isActive = view === "active";
@@ -413,7 +499,8 @@ function writeURL() {
 function applyURL() {
   const p = new URLSearchParams(location.search);
   const norm = (s) => s.toLowerCase().replace(/\s+/g, "");
-  view = p.get("view") === "bargains" ? "bargains" : "active";
+  const wantView = p.get("view");
+  view = wantView === "bargains" || wantView === "admin" ? wantView : "active";
   document.querySelectorAll(".tabs button").forEach((b) =>
     b.classList.toggle("active", b.dataset.view === view));
   $("q").value = p.get("q") || "";
@@ -439,17 +526,17 @@ async function exclude(id) {
   render();
 }
 
-// The model dropdown groups models by generation. A generation with more than
-// one variant gets an "Alla iPhone 16" row (value "all:iPhone 16") above its
-// variants; singletons stay as a plain option.
-function refreshModelOptions() {
-  const sel = $("model"), cur = sel.value;
+// fillModelSelect appends generation-grouped options to a <select>, keeping the
+// caller's first placeholder option. A generation with more than one variant
+// gets an "Alla iPhone 16" row (value "all:iPhone 16") above its variants;
+// singletons stay a plain option.
+function fillModelSelect(sel) {
   const byGen = new Map();
   for (const m of new Set([...listings, ...bargains].map((l) => l.model))) {
     const g = generationOf(m);
     (byGen.get(g) || byGen.set(g, []).get(g)).push(m);
   }
-  sel.length = 1; // keep the leading "Alla modeller"
+  sel.length = 1; // keep the leading placeholder
   for (const g of [...byGen.keys()].sort(cmpGeneration)) {
     const variants = byGen.get(g).sort((a, b) => a.localeCompare(b, "sv"));
     if (variants.length === 1) {
@@ -462,8 +549,16 @@ function refreshModelOptions() {
     for (const m of variants) og.appendChild(new Option(m, m));
     sel.appendChild(og);
   }
+}
+
+// Rebuild the toolbar model filter (preserving the current selection) and the
+// admin watchlist model picker from the same option set.
+function refreshModelOptions() {
+  const sel = $("model"), cur = sel.value;
+  fillModelSelect(sel);
   sel.value = cur; // restore selection; falls back to "" if it's gone
   if (sel.selectedIndex < 0) sel.value = "";
+  fillModelSelect($("alModel"));
 }
 
 async function toggleBroken(id, broken) {
@@ -479,6 +574,139 @@ async function toggleBroken(id, broken) {
   render();
 }
 
+// ---- admin (Inställningar) ----
+let adminChannels = [];
+let adminAlerts = [];
+const CH_LABEL = { discord: "Discord", ntfy: "ntfy", gotify: "Gotify", webhook: "Webhook" };
+
+async function loadAdmin() {
+  if (locked()) { $("adminAuth").hidden = false; return; }
+  $("adminAuth").hidden = true;
+  const [cfg, channels, alerts] = await Promise.all([
+    fetch("/api/admin/config").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    fetch("/api/admin/channels").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    fetch("/api/admin/alerts").then((r) => (r.ok ? r.json() : [])).catch(() => []),
+  ]);
+  if (cfg) {
+    $("cfgThreshold").value = cfg.threshold_pct;
+    $("cfgMinSamples").value = cfg.min_samples;
+    $("cfgMinPrice").value = cfg.min_price;
+    $("cfgInfo").textContent =
+      `Övrigt (via env): intervall ${cfg.interval}, metod ${cfg.metric}, historik ${cfg.lookback_days} dagar.`;
+  }
+  adminChannels = channels || [];
+  adminAlerts = alerts || [];
+  renderChannels();
+  renderAlerts();
+}
+
+function renderChannels() {
+  $("channelRows").innerHTML = adminChannels.map((c) => `<tr>
+    <td><span class="pill">${CH_LABEL[c.kind] || esc(c.kind)}</span></td>
+    <td>${esc(c.name || "")}</td>
+    <td class="u" title="${esc(c.url)}">${esc(c.url)}</td>
+    <td><label class="check"><input type="checkbox" data-ch-toggle="${c.id}" ${c.enabled ? "checked" : ""}> aktiv</label></td>
+    <td style="text-align:right">
+      <button class="ghost" data-ch-test="${c.id}">Testa</button>
+      <button class="del" data-ch-del="${c.id}">Ta bort</button></td>
+  </tr>`).join("") || `<tr class="empty-row"><td colspan="5">Inga kanaler än.</td></tr>`;
+}
+
+function renderAlerts() {
+  $("alertRows").innerHTML = adminAlerts.map((a) => `<tr>
+    <td><b>${a.match_type === "generation" ? "Alla " + esc(a.pattern) : esc(a.pattern)}</b></td>
+    <td>${a.storage_gb ? gbText(a.storage_gb) : "alla lagringar"}</td>
+    <td>${a.min_pct_below ? a.min_pct_below + "%" : "global tröskel"}</td>
+    <td>${a.max_price ? kr(a.max_price) + " kr" : "—"}</td>
+    <td><label class="check"><input type="checkbox" data-al-toggle="${a.id}" ${a.enabled ? "checked" : ""}> aktiv</label></td>
+    <td style="text-align:right"><button class="del" data-al-del="${a.id}">Ta bort</button></td>
+  </tr>`).join("") || `<tr class="empty-row"><td colspan="6">Inga bevakningar än — utan bevakningar skickas inga notiser.</td></tr>`;
+}
+
+async function adminPost(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) { alert("Inloggning krävs — klicka Logga in."); return null; }
+  if (!res.ok) { alert("Fel: " + (await res.text())); return null; }
+  return res.json().catch(() => ({}));
+}
+
+async function saveConfig() {
+  const ok = await adminPost("/api/admin/config", {
+    threshold_pct: parseFloat($("cfgThreshold").value),
+    min_samples: parseInt($("cfgMinSamples").value, 10),
+    min_price: parseInt($("cfgMinPrice").value, 10),
+  });
+  if (ok) $("cfgInfo").textContent = "Sparat ✔";
+}
+
+const channelForm = () => ({
+  kind: $("chKind").value, name: $("chName").value.trim(),
+  url: $("chUrl").value.trim(), token: $("chToken").value.trim(), enabled: true,
+});
+async function addChannel() {
+  if (!$("chUrl").value.trim()) { alert("Ange en URL."); return; }
+  if (await adminPost("/api/admin/channels", channelForm())) {
+    $("chName").value = $("chUrl").value = $("chToken").value = "";
+    loadAdmin();
+  }
+}
+async function testChannel(cfg) {
+  if (await adminPost("/api/admin/channels/test", cfg)) alert("Testnotis skickad ✔");
+}
+async function delChannel(id) {
+  if (confirm("Ta bort kanalen?") && await adminPost(`/api/admin/channels/${id}/delete`)) loadAdmin();
+}
+async function toggleChannel(id, enabled) {
+  const c = adminChannels.find((x) => String(x.id) === String(id));
+  if (c && await adminPost("/api/admin/channels", { ...c, enabled })) loadAdmin();
+}
+
+async function addAlert() {
+  const v = $("alModel").value;
+  if (!v) { alert("Välj en modell."); return; }
+  const gen = v.startsWith("all:");
+  const ok = await adminPost("/api/admin/alerts", {
+    match_type: gen ? "generation" : "model",
+    pattern: gen ? v.slice(4) : v,
+    storage_gb: parseInt($("alStorage").value, 10) || 0,
+    min_pct_below: parseFloat($("alPct").value) || 0,
+    max_price: parseInt($("alMax").value, 10) || 0,
+    enabled: true,
+  });
+  if (ok) {
+    $("alModel").value = "";
+    $("alStorage").value = $("alPct").value = $("alMax").value = "";
+    loadAdmin();
+  }
+}
+async function delAlert(id) {
+  if (await adminPost(`/api/admin/alerts/${id}/delete`)) loadAdmin();
+}
+async function toggleAlert(id, enabled) {
+  const a = adminAlerts.find((x) => String(x.id) === String(id));
+  if (a && await adminPost("/api/admin/alerts", { ...a, enabled })) loadAdmin();
+}
+
+$("adminPanel").addEventListener("click", (e) => {
+  const t = e.target, d = t.dataset;
+  if (t.id === "cfgSave") saveConfig();
+  else if (t.id === "chAdd") addChannel();
+  else if (t.id === "chTest") testChannel(channelForm());
+  else if (t.id === "alAdd") addAlert();
+  else if (d.chTest) { const c = adminChannels.find((x) => String(x.id) === d.chTest); if (c) testChannel({ kind: c.kind, url: c.url, token: c.token }); }
+  else if (d.chDel) delChannel(d.chDel);
+  else if (d.alDel) delAlert(d.alDel);
+});
+$("adminPanel").addEventListener("change", (e) => {
+  const d = e.target.dataset;
+  if (d.chToggle) toggleChannel(d.chToggle, e.target.checked);
+  else if (d.alToggle) toggleAlert(d.alToggle, e.target.checked);
+});
+
 async function load() {
   const [st, ls, bg, au] = await Promise.all([
     fetch("/api/status").then((r) => r.json()),
@@ -492,7 +720,7 @@ async function load() {
   $("login").hidden = !locked();
 
   refreshModelOptions();
-  if (!urlApplied) { applyURL(); urlApplied = true; }
+  if (!urlApplied) { applyURL(); if (view === "admin") loadAdmin(); urlApplied = true; }
 
   const t = st.last_run_start ? new Date(st.last_run_start) : null;
   $("status").innerHTML =
@@ -535,12 +763,13 @@ document.querySelectorAll(".tabs button").forEach((btn) =>
     view = btn.dataset.view;
     document.querySelectorAll(".tabs button").forEach((b) =>
       b.classList.toggle("active", b === btn));
+    if (view === "admin") loadAdmin();
     render();
   }));
 for (const id of ["q", "model", "onlyHits"])
   $(id).addEventListener("input", render);
 // Back/forward through bookmarked filter states.
-addEventListener("popstate", () => { applyURL(); render(); });
+addEventListener("popstate", () => { applyURL(); if (view === "admin") loadAdmin(); render(); });
 
 load().catch((err) => { $("status").textContent = "kunde inte ladda: " + err; });
 setInterval(() => load().catch(() => {}), 120000);

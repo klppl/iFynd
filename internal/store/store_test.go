@@ -150,3 +150,54 @@ func TestPruneCategories(t *testing.T) {
 		t.Fatalf("active after prune = %+v, want only the iPhone row (id 1)", actives)
 	}
 }
+
+func TestSettingsChannelsAlertsRoundTrip(t *testing.T) {
+	s := testStore(t)
+
+	// settings
+	if err := s.SetSetting("threshold_pct", "12.5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSetting("threshold_pct", "20"); err != nil { // upsert
+		t.Fatal(err)
+	}
+	set, err := s.Settings()
+	if err != nil || set["threshold_pct"] != "20" {
+		t.Fatalf("settings = %v err=%v", set, err)
+	}
+
+	// channels
+	id, err := s.UpsertChannel(Channel{Kind: "ntfy", Name: "phone", URL: "https://ntfy.sh/x", Enabled: true})
+	if err != nil || id == 0 {
+		t.Fatalf("upsert channel: id=%d err=%v", id, err)
+	}
+	if _, err := s.UpsertChannel(Channel{ID: id, Kind: "ntfy", Name: "phone", URL: "https://ntfy.sh/y", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	chs, err := s.Channels()
+	if err != nil || len(chs) != 1 || chs[0].URL != "https://ntfy.sh/y" || chs[0].Enabled {
+		t.Fatalf("channels = %+v err=%v", chs, err)
+	}
+	if err := s.DeleteChannel(id); err != nil {
+		t.Fatal(err)
+	}
+	if chs, _ := s.Channels(); len(chs) != 0 {
+		t.Fatalf("channels after delete = %+v", chs)
+	}
+
+	// alerts
+	aid, err := s.UpsertAlert(Alert{MatchType: "generation", Pattern: "iPhone 16", MaxPrice: 6000, Enabled: true})
+	if err != nil || aid == 0 {
+		t.Fatalf("upsert alert: id=%d err=%v", aid, err)
+	}
+	al, err := s.Alerts()
+	if err != nil || len(al) != 1 || al[0].Pattern != "iPhone 16" || al[0].MaxPrice != 6000 {
+		t.Fatalf("alerts = %+v err=%v", al, err)
+	}
+	if err := s.DeleteAlert(aid); err != nil {
+		t.Fatal(err)
+	}
+	if al, _ := s.Alerts(); len(al) != 0 {
+		t.Fatalf("alerts after delete = %+v", al)
+	}
+}

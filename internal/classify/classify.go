@@ -98,6 +98,20 @@ var modelRe = regexp.MustCompile(`(?i)\biphone\s*(3gs|3g|4s|5s|5c|6s|16e|17|16|1
 
 var seYearRe = regexp.MustCompile(`(?i)\bse\b.{0,20}?\b(2016|2020|2022)\b`)
 
+// genRe pulls the numbered generation out of a canonical model. It mirrors the
+// GUI's generationOf so "iPhone 16", "iPhone 16e" and "iPhone 16 Pro Max" all
+// share the generation "iPhone 16".
+var genRe = regexp.MustCompile(`(?i)^iphone\s+(\d+)`)
+
+// Generation collapses a canonical model to its numbered generation, or
+// returns the model unchanged for non-numbered ones (SE, X-series).
+func Generation(model string) string {
+	if m := genRe.FindStringSubmatch(model); m != nil {
+		return "iPhone " + m[1]
+	}
+	return model
+}
+
 // Item classifies a Tradera listing. When ok is false, reason says why.
 func Item(it *tradera.Item, fam Family) (res Result, ok bool, reason string) {
 	title := strings.ToLower(it.ShortDescription)

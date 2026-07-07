@@ -18,7 +18,6 @@ import (
 
 	"github.com/klppl/ifynd/internal/analyze"
 	"github.com/klppl/ifynd/internal/classify"
-	"github.com/klppl/ifynd/internal/notify"
 	"github.com/klppl/ifynd/internal/store"
 	"github.com/klppl/ifynd/internal/tradera"
 )
@@ -54,7 +53,6 @@ type Config struct {
 
 	RequestDelay time.Duration
 	UserAgent    string
-	Notifier     string
 
 	Public      bool   // GUI is reachable from the internet
 	WebPassword string // required when Public; unlocks broken/exclude
@@ -65,7 +63,6 @@ func loadConfig() (Config, error) {
 		DBPath:    envStr("IFYND_DB_PATH", "ifynd.db"),
 		HTTPAddr:  envStr("IFYND_HTTP_ADDR", ":8080"),
 		UserAgent: envStr("IFYND_USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
-		Notifier:  envStr("IFYND_NOTIFIER", "log"),
 	}
 	var err error
 	if cfg.Interval, err = envDuration("IFYND_INTERVAL", 30*time.Minute); err != nil {
@@ -237,17 +234,10 @@ func main() {
 		return
 	}
 
-	notifier, err := notify.New(cfg.Notifier)
-	if err != nil {
-		slog.Error("notifier", "err", err)
-		os.Exit(1)
-	}
-
 	app := &App{
-		cfg:      cfg,
-		store:    st,
-		client:   tradera.NewClient(cfg.UserAgent, cfg.RequestDelay),
-		notifier: notifier,
+		cfg:    cfg,
+		store:  st,
+		client: tradera.NewClient(cfg.UserAgent, cfg.RequestDelay),
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

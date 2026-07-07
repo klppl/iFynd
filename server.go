@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/klppl/ifynd/internal/analyze"
 	"github.com/klppl/ifynd/internal/notify"
+	"github.com/klppl/ifynd/internal/store"
 )
 
 //go:embed web/index.html
@@ -40,6 +41,7 @@ type ListingView struct {
 	Samples   int       `json:"samples"`
 	PctBelow  float64   `json:"pct_below"` // negative = above reference
 	IsHit     bool      `json:"is_hit"`
+	Alerted   bool      `json:"alerted"` // matches an enabled watchlist rule
 }
 
 const sessionCookie = "ifynd_session"
@@ -236,7 +238,181 @@ func (a *App) Router() http.Handler {
 		writeJSON(w, buckets)
 	})
 
+	a.adminRoutes(r, requireAuth)
+
 	return r
+}
+
+// adminRoutes registers the admin GUI's API: detection tuning, notification
+// channels and the watchlist. Everything is behind requireAuth (which only
+// blocks when the GUI is public), because it reads/writes channel secrets.
+func (a *App) adminRoutes(r chi.Router, requireAuth func(http.HandlerFunc) http.HandlerFunc) {
+	// Detection tuning: effective values (env defaults + admin overrides).
+	r.Get("/api/admin/config", requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		eff := a.tuning()
+		writeJSON(w, map[string]any{
+			"threshold_pct": eff.ThresholdPct,
+			"min_samples":   eff.MinSamples,
+			"min_price":     eff.MinPrice,
+			// read-only context, configured via env
+			"interval":      a.cfg.Interval.String(),
+			"metric":        string(a.cfg.Metric),
+			"lookback_days": a.cfg.LookbackDays,
+		})
+	}))
+
+	r.Post("/api/admin/config", requireAuth(func(w http.ResponseWriter, req *http.Request) {
+		var b struct {
+			ThresholdPct *float64 `json:"threshold_pct"`
+			MinSamples   *int     `json:"min_samples"`
+			MinPrice     *int     `json:"min_price"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&b); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if b.ThresholdPct != nil {
+			if *b.ThresholdPct <= 0 || *b.ThresholdPct >= 100 {
+				http.Error(w, "threshold_pct must be between 0 and 100", http.StatusBadRequest)
+				return
+			}
+			a.store.SetSetting("threshold_pct", strconv.FormatFloat(*b.ThresholdPct, 'f', -1, 64))
+		}
+		if b.MinSamples != nil {
+			if *b.MinSamples < 1 {
+				http.Error(w, "min_samples must be >= 1", http.StatusBadRequest)
+				return
+			}
+			a.store.SetSetting("min_samples", strconv.Itoa(*b.MinSamples))
+		}
+		if b.MinPrice != nil {
+			if *b.MinPrice < 0 {
+				http.Error(w, "min_price must be >= 0", http.StatusBadRequest)
+				return
+			}
+			a.store.SetSetting("min_price", strconv.Itoa(*b.MinPrice))
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	}))
+
+	// Notification channels.
+	r.Get("/api/admin/channels", requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		channels, err := a.store.Channels()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if channels == nil {
+			channels = []store.Channel{}
+		}
+		writeJSON(w, channels)
+	}))
+
+	r.Post("/api/admin/channels", requireAuth(func(w http.ResponseWriter, req *http.Request) {
+		var c store.Channel
+		if err := json.NewDecoder(req.Body).Decode(&c); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if _, err := notify.Build(c.Kind, c.URL, c.Token); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		id, err := a.store.UpsertChannel(c)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		c.ID = id
+		writeJSON(w, c)
+	}))
+
+	r.Post("/api/admin/channels/{id}/delete", requireAuth(func(w http.ResponseWriter, req *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(req, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		if err := a.store.DeleteChannel(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	}))
+
+	// Send a sample notification to a channel config (tested before/without
+	// saving) so the user can confirm their webhook works.
+	r.Post("/api/admin/channels/test", requireAuth(func(w http.ResponseWriter, req *http.Request) {
+		var c store.Channel
+		if err := json.NewDecoder(req.Body).Decode(&c); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		n, err := notify.Build(c.Kind, c.URL, c.Token)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		sample := notify.Hit{
+			Model: "iPhone 16 Pro", StorageGB: 256, Price: 6999,
+			RefPrice: 8500, PctBelow: 17.7, Samples: 42,
+			Title: "Testnotis från iFynd", URL: "https://www.tradera.com",
+		}
+		if err := n.Notify(req.Context(), sample); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	}))
+
+	// Watchlist alerts.
+	r.Get("/api/admin/alerts", requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		alerts, err := a.store.Alerts()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if alerts == nil {
+			alerts = []store.Alert{}
+		}
+		writeJSON(w, alerts)
+	}))
+
+	r.Post("/api/admin/alerts", requireAuth(func(w http.ResponseWriter, req *http.Request) {
+		var al store.Alert
+		if err := json.NewDecoder(req.Body).Decode(&al); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		if al.MatchType != "model" && al.MatchType != "generation" {
+			http.Error(w, "match_type must be model or generation", http.StatusBadRequest)
+			return
+		}
+		if al.Pattern == "" {
+			http.Error(w, "pattern required", http.StatusBadRequest)
+			return
+		}
+		id, err := a.store.UpsertAlert(al)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		al.ID = id
+		writeJSON(w, al)
+	}))
+
+	r.Post("/api/admin/alerts/{id}/delete", requireAuth(func(w http.ResponseWriter, req *http.Request) {
+		id, err := strconv.ParseInt(chi.URLParam(req, "id"), 10, 64)
+		if err != nil {
+			http.Error(w, "bad id", http.StatusBadRequest)
+			return
+		}
+		if err := a.store.DeleteAlert(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	}))
 }
 
 // refCache lazily computes the reference price per (model, storage) bucket
@@ -252,16 +428,18 @@ type bucketRef struct {
 }
 
 type refCache struct {
-	a     *App
-	since time.Time
-	refs  map[bucketKey]bucketRef
+	a          *App
+	since      time.Time
+	minSamples int
+	refs       map[bucketKey]bucketRef
 }
 
-func (a *App) newRefCache() *refCache {
+func (a *App) newRefCache(minSamples int) *refCache {
 	return &refCache{
-		a:     a,
-		since: time.Now().AddDate(0, 0, -a.cfg.LookbackDays),
-		refs:  map[bucketKey]bucketRef{},
+		a:          a,
+		since:      time.Now().AddDate(0, 0, -a.cfg.LookbackDays),
+		minSamples: minSamples,
+		refs:       map[bucketKey]bucketRef{},
 	}
 }
 
@@ -274,7 +452,7 @@ func (c *refCache) get(model string, gb int) (ref float64, samples int, err erro
 			return 0, 0, err
 		}
 		r.samples = len(prices)
-		if r.samples >= c.a.cfg.MinSamples {
+		if r.samples >= c.minSamples {
 			r.ref = analyze.Reference(prices, c.a.cfg.Metric, c.a.cfg.TrimPct)
 		}
 		c.refs[key] = r
@@ -288,7 +466,12 @@ func (a *App) listingViews() ([]ListingView, error) {
 	if err != nil {
 		return nil, err
 	}
-	cache := a.newRefCache()
+	eff := a.tuning()
+	alerts, err := a.store.Alerts()
+	if err != nil {
+		return nil, err
+	}
+	cache := a.newRefCache(eff.MinSamples)
 	views := make([]ListingView, 0, len(actives))
 	for _, l := range actives {
 		ref, samples, err := cache.get(l.Model, l.StorageGB)
@@ -309,7 +492,8 @@ func (a *App) listingViews() ([]ListingView, error) {
 			v.RefPrice = ref
 			v.PctBelow = analyze.PctBelow(l.Price, ref)
 			// Purely price-based; the broken flag is the user's veto on top.
-			v.IsHit = analyze.IsHit(l.Price, ref, a.cfg.ThresholdPct)
+			v.IsHit = analyze.IsHit(l.Price, ref, eff.ThresholdPct)
+			v.Alerted = !l.Broken && matchAlert(alerts, l.Model, l.StorageGB, l.Price, ref, eff.ThresholdPct) != nil
 		}
 		views = append(views, v)
 	}
@@ -335,7 +519,8 @@ type BargainView struct {
 // bargainViews returns sold listings within the lookback window whose final
 // price undercut their bucket reference by at least the hit threshold.
 func (a *App) bargainViews() ([]BargainView, error) {
-	cache := a.newRefCache()
+	eff := a.tuning()
+	cache := a.newRefCache(eff.MinSamples)
 	sold, err := a.store.ListSold(cache.since)
 	if err != nil {
 		return nil, err
@@ -346,7 +531,7 @@ func (a *App) bargainViews() ([]BargainView, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !analyze.IsHit(l.Price, ref, a.cfg.ThresholdPct) {
+		if !analyze.IsHit(l.Price, ref, eff.ThresholdPct) {
 			continue
 		}
 		v := BargainView{

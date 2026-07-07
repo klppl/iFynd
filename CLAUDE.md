@@ -56,14 +56,18 @@ router (server.go); each `internal/` package is one stage.
   are stored everywhere so misclassifications can be audited later.
 - **internal/store** — SQLite. `sold_listings` is append-only history
   (INSERT OR IGNORE on Tradera id); `active_listings` is upserted with
-  `last_seen` refreshed, preserving `first_seen`/`notified`/`broken`.
-  Schema changes need a migration in `Open()` (see the `broken` column
-  pattern: pragma_table_info check + ALTER TABLE).
+  `last_seen` refreshed, preserving `first_seen`/`notified`/`broken`. Admin
+  state lives in `settings` (key/value tuning overrides), `notify_channels`
+  and `alerts` (the watchlist). Schema changes need a migration in `Open()`
+  (see the `broken` column pattern: pragma_table_info check + ALTER TABLE);
+  the admin tables are plain `CREATE TABLE IF NOT EXISTS` in `schema`.
 - **internal/analyze** — median/trimmed-mean reference price and hit
   threshold math. Pure functions, no I/O.
-- **internal/notify** — `Notifier` interface; `log` is the only
-  implementation. New channels (ntfy/Discord) get registered in `New()`
-  and selected via `IFYND_NOTIFIER`.
+- **internal/notify** — `Notifier` interface. `notify.Build(kind,url,token)`
+  constructs one channel (`discord`/`ntfy`/`gotify`/`webhook`/`log`) from its
+  stored config; `Multi` fans a hit out to several. Channels are rebuilt from
+  the DB each run (`App.buildNotifier`) so admin edits take effect without a
+  restart. New channel kinds get a struct in channels.go + a case in `Build`.
 - **web/index.html** — the whole GUI, embedded via `go:embed` in server.go.
   Vanilla JS, no external assets (must work offline), Swedish UI copy,
   light+dark via `prefers-color-scheme`.
@@ -80,13 +84,20 @@ router (server.go); each `internal/` package is one stage.
   history contains 1 kr auctions and wishful 3× listings.
 - A bucket needs ≥ `IFYND_MIN_SAMPLES` sold records or it's ignored
   entirely; a bad guess polluting averages is worse than no signal.
-- `is_hit` in the API is purely price-based; the user-set `broken` flag is
-  a veto on top (excluded from notifications server-side in `compare`,
-  red in the GUI). Both user actions tombstone the id in
-  `blocked_listings`: `broken` keeps the row visible but blocks its future
-  sold price from the history; `excluded` deletes the row and blocks both
-  scrape paths from ever re-adding it. Notifications fire once per listing
-  (`notified` flag), retried next run if the notifier errors.
+- `is_hit` in the API is purely price-based (radar/GUI green); the user-set
+  `broken` flag is a veto on top (red in the GUI). Both user actions tombstone
+  the id in `blocked_listings`: `broken` keeps the row visible but blocks its
+  future sold price from the history; `excluded` deletes the row and blocks
+  both scrape paths from ever re-adding it.
+- Notifications are **watchlist-only**: `compare` records every price-hit for
+  the radar, but only pushes listings that match an enabled `alerts` rule
+  (exact model or `classify.Generation`, optional storage, per-rule threshold
+  override, optional absolute price ceiling). No alerts ⇒ no notifications.
+  Each fires once per listing (`notified` flag), retried next run on error;
+  `matchAlert` is the shared predicate (also feeds `ListingView.Alerted`).
+- Detection tuning (`threshold_pct`/`min_samples`/`min_price`) is resolved per
+  run/request by `App.tuning()`: DB `settings` overrides overlay the `IFYND_*`
+  env defaults, so the admin GUI edits behavior live.
 - Scraping is throttled (`Throttle`, delay + jitter) with a real browser
   User-Agent. Keep it polite; don't add parallel fetching.
 

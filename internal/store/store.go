@@ -56,6 +56,34 @@ CREATE TABLE IF NOT EXISTS skipped_listings (
 	reason   TEXT NOT NULL,
 	seen_at  TEXT NOT NULL
 );
+
+-- Admin-editable tuning, overriding the IFYND_* env defaults at runtime.
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+
+-- Notification channels (Discord/ntfy/Gotify/webhook), any number enabled.
+CREATE TABLE IF NOT EXISTS notify_channels (
+	id      INTEGER PRIMARY KEY AUTOINCREMENT,
+	kind    TEXT    NOT NULL,               -- discord | ntfy | gotify | webhook
+	name    TEXT    NOT NULL DEFAULT '',    -- user label
+	url     TEXT    NOT NULL DEFAULT '',    -- webhook/topic/server URL
+	token   TEXT    NOT NULL DEFAULT '',    -- gotify app token / ntfy auth, optional
+	enabled INTEGER NOT NULL DEFAULT 1
+);
+
+-- Watchlist: only listings matching an enabled alert are notified.
+CREATE TABLE IF NOT EXISTS alerts (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	match_type    TEXT    NOT NULL,             -- model | generation
+	pattern       TEXT    NOT NULL,             -- "iPhone 16 Pro" or "iPhone 16"
+	storage_gb    INTEGER NOT NULL DEFAULT 0,   -- 0 = any storage
+	min_pct_below REAL    NOT NULL DEFAULT 0,   -- 0 = use the global threshold
+	max_price     INTEGER NOT NULL DEFAULT 0,   -- 0 = no absolute ceiling
+	enabled       INTEGER NOT NULL DEFAULT 1,
+	created_at    TEXT    NOT NULL
+);
 `
 
 type Store struct {
@@ -411,4 +439,140 @@ func (s *Store) Buckets(since time.Time) ([]BucketRow, error) {
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// Settings returns every admin-set key/value override.
+func (s *Store) Settings() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// SetSetting upserts one tuning override.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// Channel is one configured notification target.
+type Channel struct {
+	ID      int64  `json:"id"`
+	Kind    string `json:"kind"` // discord | ntfy | gotify | webhook
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Token   string `json:"token"`
+	Enabled bool   `json:"enabled"`
+}
+
+func (s *Store) Channels() ([]Channel, error) {
+	rows, err := s.db.Query(`SELECT id, kind, name, url, token, enabled FROM notify_channels ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Channel
+	for rows.Next() {
+		var c Channel
+		var enabled int
+		if err := rows.Scan(&c.ID, &c.Kind, &c.Name, &c.URL, &c.Token, &enabled); err != nil {
+			return nil, err
+		}
+		c.Enabled = enabled != 0
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpsertChannel inserts (id==0) or updates a channel, returning its id.
+func (s *Store) UpsertChannel(c Channel) (int64, error) {
+	if c.ID == 0 {
+		res, err := s.db.Exec(`INSERT INTO notify_channels (kind, name, url, token, enabled)
+			VALUES (?,?,?,?,?)`, c.Kind, c.Name, c.URL, c.Token, b2i(c.Enabled))
+		if err != nil {
+			return 0, err
+		}
+		return res.LastInsertId()
+	}
+	_, err := s.db.Exec(`UPDATE notify_channels SET kind=?, name=?, url=?, token=?, enabled=? WHERE id=?`,
+		c.Kind, c.Name, c.URL, c.Token, b2i(c.Enabled), c.ID)
+	return c.ID, err
+}
+
+func (s *Store) DeleteChannel(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM notify_channels WHERE id = ?`, id)
+	return err
+}
+
+// Alert is one watchlist rule. Only listings matching an enabled alert are
+// notified (watchlist-only mode).
+type Alert struct {
+	ID          int64   `json:"id"`
+	MatchType   string  `json:"match_type"` // model | generation
+	Pattern     string  `json:"pattern"`
+	StorageGB   int     `json:"storage_gb"`
+	MinPctBelow float64 `json:"min_pct_below"`
+	MaxPrice    int     `json:"max_price"`
+	Enabled     bool    `json:"enabled"`
+}
+
+func (s *Store) Alerts() ([]Alert, error) {
+	rows, err := s.db.Query(`SELECT id, match_type, pattern, storage_gb, min_pct_below, max_price, enabled
+		FROM alerts ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Alert
+	for rows.Next() {
+		var a Alert
+		var enabled int
+		if err := rows.Scan(&a.ID, &a.MatchType, &a.Pattern, &a.StorageGB, &a.MinPctBelow, &a.MaxPrice, &enabled); err != nil {
+			return nil, err
+		}
+		a.Enabled = enabled != 0
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// UpsertAlert inserts (id==0) or updates a watchlist rule, returning its id.
+func (s *Store) UpsertAlert(a Alert) (int64, error) {
+	if a.ID == 0 {
+		res, err := s.db.Exec(`INSERT INTO alerts
+			(match_type, pattern, storage_gb, min_pct_below, max_price, enabled, created_at)
+			VALUES (?,?,?,?,?,?,?)`,
+			a.MatchType, a.Pattern, a.StorageGB, a.MinPctBelow, a.MaxPrice, b2i(a.Enabled),
+			time.Now().UTC().Format(time.RFC3339))
+		if err != nil {
+			return 0, err
+		}
+		return res.LastInsertId()
+	}
+	_, err := s.db.Exec(`UPDATE alerts SET match_type=?, pattern=?, storage_gb=?, min_pct_below=?, max_price=?, enabled=? WHERE id=?`,
+		a.MatchType, a.Pattern, a.StorageGB, a.MinPctBelow, a.MaxPrice, b2i(a.Enabled), a.ID)
+	return a.ID, err
+}
+
+func (s *Store) DeleteAlert(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM alerts WHERE id = ?`, id)
+	return err
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

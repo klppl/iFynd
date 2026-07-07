@@ -23,10 +23,14 @@ timer istället för att jag sitter och uppdaterar sidan.
 Var 30:e minut skrapas Traderas sålda och aktiva annonser. Varje annons
 sorteras i en bucket per modell och lagring, och aktiva köp nu-annonser
 jämförs med medianpriset för sålda i samma bucket. Ligger priset tillräckligt
-långt under flaggas det som fynd och notifieras, en gång per annons. Allt som
-inte kan klassificeras med säkerhet — tillbehör, paket, reservdelsobjekt,
-titlar utan tydlig modell eller lagring — hoppas över, för en felgissning i
-prishistoriken är värre än en saknad datapunkt.
+långt under blir det ett fynd (grönt i radarn). Allt som inte kan klassificeras
+med säkerhet — tillbehör, paket, reservdelsobjekt, titlar utan tydlig modell
+eller lagring — hoppas över, för en felgissning i prishistoriken är värre än en
+saknad datapunkt.
+
+Notiser är bevakningsstyrda: du får bara en notis (en gång per annons) för de
+modeller du lagt till som **bevakning** under Inställningar. Utan bevakningar
+skickas inga notiser — radarn visar ändå alla fynd.
 
 ## Kör
 
@@ -73,9 +77,23 @@ generationen), `/?model=iPhone+16+Pro` (en modell), `/?view=bargains`,
 litet JSON-API — `/api/listings`, `/api/bargains`, `/api/hits`,
 `/api/buckets`, `/api/status` — plus `/healthz`.
 
+### Inställningar (admin)
+
+Fliken **Inställningar** styr tre saker, sparade i databasen (ingen omstart
+behövs):
+
+- **Detektering** — tröskel, min. antal sålda och min. pris överstyr
+  `IFYND_*`-standardvärdena.
+- **Notiskanaler** — lägg till valfritt antal av **Discord**, **ntfy**,
+  **Gotify** och generisk **webhook** (fungerar även för Slack/Mattermost).
+  Alla aktiva kanaler får varje notis, och en **Testa**-knapp skickar en
+  provnotis direkt.
+- **Bevakningar** — en modell eller en hel generation, med valfri lagring,
+  egen tröskel och takpris. Bara bevakade modeller ger notiser.
+
 Är sidan nåbar från internet, sätt `IFYND_PUBLIC=true` och ett
-`IFYND_WEB_PASSWORD`. Då är läsning fortfarande öppen, men knapparna
-kräver inloggning (knappen **Logga in** uppe till höger).
+`IFYND_WEB_PASSWORD`. Då är läsning fortfarande öppen, men knapparna och
+admin-fliken kräver inloggning (knappen **Logga in** uppe till höger).
 
 ## Konfiguration
 
@@ -84,9 +102,8 @@ Allt styrs med miljövariabler. De viktigaste:
 | Variabel | Standard | Betydelse |
 |---|---|---|
 | `IFYND_INTERVAL` | `30m` | Hur ofta Tradera skrapas |
-| `IFYND_THRESHOLD_PCT` | `15` | Minsta % under medianen för att räknas som fynd |
-| `IFYND_MIN_SAMPLES` | `5` | Minsta antal sålda innan en bucket litas på |
-| `IFYND_NOTIFIER` | `log` | Notifieringskanal |
+| `IFYND_THRESHOLD_PCT` | `15` | Minsta % under medianen för att räknas som fynd (kan överstyras i admin) |
+| `IFYND_MIN_SAMPLES` | `5` | Minsta antal sålda innan en bucket litas på (kan överstyras i admin) |
 | `IFYND_DB_PATH` | `ifynd.db` | SQLite-databasen (`/data/ifynd.db` i Docker) |
 | `IFYND_PUBLIC` | `false` | Sätt till `true` när GUI:t är nåbart från internet |
 | `IFYND_WEB_PASSWORD` | — | Krävs när `IFYND_PUBLIC` är på; låser upp Trasig/Exkludera |
